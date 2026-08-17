@@ -81,11 +81,21 @@ export default function ShowDetailScreen() {
     return () => { active = false; };
   }, [showId]);
 
+  // Auto-correct next episode in DB whenever both seasons and watchedEps are known.
+  // This repairs any stale values (e.g. from the previous timing bug).
+  useEffect(() => {
+    if (!userShow || seasons.length === 0) return;
+    syncNextEpisode(userShow.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seasons, watchedEps.length]);
+
   async function toggleEpisode(seasonNum: number, episodeNum: number) {
     if (!user) return;
     const existing = watchedEps.find(
       e => e.seasonNumber === seasonNum && e.episodeNumber === episodeNum
     );
+    const isMarking = !existing;
+
     if (existing) {
       await db.transact([db.tx.watchedEpisodes[existing.id].delete()]);
     } else {
@@ -98,23 +108,45 @@ export default function ShowDetailScreen() {
         }).link({ $user: user.id }),
       ]);
     }
-    // Sync next episode info back to userShow so Episodes tab stays up to date
+
     if (userShow) {
-      syncNextEpisode(userShow.id);
+      // Pass the toggled episode so syncNextEpisode doesn't need to wait for
+      // the reactive query to refresh before computing the correct next episode.
+      syncNextEpisode(userShow.id, {
+        season: seasonNum,
+        ep: episodeNum,
+        justMarked: isMarking,
+      });
     }
   }
 
-  function syncNextEpisode(userShowId: string) {
+  function syncNextEpisode(
+    userShowId: string,
+    toggle?: { season: number; ep: number; justMarked: boolean }
+  ) {
     if (!seasons.length) return;
     const allEps = seasons.flatMap(s =>
-      (s.episodes ?? []).map(e => ({ season: s.season_number, ep: e.episode_number, name: e.name }))
+      (s.episodes ?? []).map(e => ({
+        season: s.season_number,
+        ep: e.episode_number,
+        name: e.name,
+      }))
     );
-    const newWatchedSet = new Set([
-      ...watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`),
-    ]);
-    const nextEp = allEps.find(e => !newWatchedSet.has(`${e.season}x${e.ep}`));
-    const totalEps = allEps.length;
-    const updates: Record<string, unknown> = { totalEpisodes: totalEps };
+
+    // Build an accurate watched set that already reflects the just-toggled episode
+    const watched = new Set(watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`));
+    if (toggle) {
+      const key = `${toggle.season}x${toggle.ep}`;
+      if (toggle.justMarked) {
+        watched.add(key);
+      } else {
+        watched.delete(key);
+      }
+    }
+
+    const nextEp = allEps.find(e => !watched.has(`${e.season}x${e.ep}`));
+    const updates: Record<string, unknown> = { totalEpisodes: allEps.length };
+
     if (nextEp) {
       updates.nextSeasonNum = nextEp.season;
       updates.nextEpisodeNum = nextEp.ep;
@@ -123,6 +155,7 @@ export default function ShowDetailScreen() {
     } else {
       updates.status = 'upToDate';
     }
+
     db.transact([db.tx.userShows[userShowId].update(updates)]);
   }
 
@@ -148,8 +181,11 @@ export default function ShowDetailScreen() {
         )
       );
     }
+
+    // After marking/unmarking a full season, let the reactive query settle
+    // (all episodes changed at once) then recompute
     if (userShow) {
-      setTimeout(() => syncNextEpisode(userShow.id), 300);
+      setTimeout(() => syncNextEpisode(userShow!.id), 200);
     }
   }
 

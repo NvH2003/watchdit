@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   Platform,
   Image,
+  Modal,
+  Pressable,
 } from 'react-native';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
 import { posterUrl } from '@/lib/tmdb';
@@ -37,14 +39,49 @@ function RightActions({
   return (
     <View style={styles.rightActions}>
       <TouchableOpacity style={[styles.actionBtn, styles.watchLaterBtn]} onPress={onWatchLater}>
-        <Text style={styles.actionIcon}>⏱</Text>
+        <Text style={styles.actionEmoji}>⏱</Text>
         <Text style={styles.actionText}>Later</Text>
       </TouchableOpacity>
       <TouchableOpacity style={[styles.actionBtn, styles.removeBtn]} onPress={onRemove}>
-        <Text style={styles.actionIcon}>✕</Text>
+        <Text style={styles.actionEmoji}>✕</Text>
         <Text style={styles.actionText}>Remove</Text>
       </TouchableOpacity>
     </View>
+  );
+}
+
+function WebMenu({
+  visible,
+  onClose,
+  onWatchLater,
+  onRemove,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onWatchLater: () => void;
+  onRemove: () => void;
+}) {
+  if (!visible) return null;
+  return (
+    <Modal transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable style={styles.menuOverlay} onPress={onClose}>
+        <View style={styles.menuBox}>
+          <TouchableOpacity
+            style={styles.menuItem}
+            onPress={() => { onWatchLater(); onClose(); }}
+          >
+            <Text style={styles.menuItemText}>⏱  Watch Later</Text>
+          </TouchableOpacity>
+          <View style={styles.menuDivider} />
+          <TouchableOpacity
+            style={styles.menuItem}
+            onPress={() => { onRemove(); onClose(); }}
+          >
+            <Text style={[styles.menuItemText, styles.menuItemDanger]}>✕  Remove</Text>
+          </TouchableOpacity>
+        </View>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -63,26 +100,27 @@ export default function ShowRowTV({
   onRemove,
 }: ShowRowTVProps) {
   const swipeRef = useRef<Swipeable>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
   const poster = posterUrl(posterPath, 'w185');
 
-  const hasNextEp = nextSeasonNum != null && nextEpisodeNum != null;
-  const epCode = hasNextEp
-    ? `S${String(nextSeasonNum).padStart(2, '0')} | E${String(nextEpisodeNum).padStart(2, '0')}`
-    : null;
+  const season = nextSeasonNum ?? 1;
+  const episode = nextEpisodeNum ?? 1;
+  const epCode = `S${String(season).padStart(2, '0')} | E${String(episode).padStart(2, '0')}`;
+  const remaining = remainingCount ?? 0;
 
   function handleWatchLater() {
     swipeRef.current?.close();
     onStatusChange(id, 'watchLater');
   }
-
   function handleRemove() {
     swipeRef.current?.close();
     onRemove(id);
   }
 
-  const inner = (
+  const rowContent = (
     <View style={styles.row}>
-      <TouchableOpacity onPress={onShowPress} activeOpacity={0.85}>
+      {/* Poster */}
+      <TouchableOpacity onPress={onShowPress} activeOpacity={0.8}>
         {poster ? (
           <Image source={{ uri: poster }} style={styles.poster} />
         ) : (
@@ -92,6 +130,7 @@ export default function ShowRowTV({
         )}
       </TouchableOpacity>
 
+      {/* Info */}
       <View style={styles.info}>
         <TouchableOpacity style={styles.showPill} onPress={onShowPress} activeOpacity={0.7}>
           <Text style={styles.showPillText} numberOfLines={1}>
@@ -100,52 +139,53 @@ export default function ShowRowTV({
           <Text style={styles.showPillArrow}> ›</Text>
         </TouchableOpacity>
 
-        {epCode ? (
-          <View style={styles.epRow}>
-            <Text style={styles.epCode}>{epCode}</Text>
-            {(remainingCount ?? 0) > 0 && (
-              <Text style={styles.remaining}> +{remainingCount}</Text>
-            )}
-          </View>
-        ) : null}
+        <View style={styles.epRow}>
+          <Text style={styles.epCode}>{epCode}</Text>
+          {remaining > 0 && (
+            <Text style={styles.remaining}> +{remaining}</Text>
+          )}
+        </View>
 
         {nextEpisodeName ? (
-          <Text style={styles.epName} numberOfLines={1}>
-            {nextEpisodeName}
-          </Text>
+          <Text style={styles.epName} numberOfLines={1}>{nextEpisodeName}</Text>
         ) : null}
       </View>
 
-      <TouchableOpacity
-        style={[styles.checkBtn, status === 'upToDate' && styles.checkBtnDone]}
-        onPress={onCheckPress}
-        activeOpacity={0.75}
-        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-      >
-        <Text style={styles.checkIcon}>✓</Text>
-      </TouchableOpacity>
-
-      {Platform.OS === 'web' && (
-        <View style={styles.webActions}>
+      {/* Right side actions */}
+      <View style={styles.rightSide}>
+        {Platform.OS === 'web' && (
           <TouchableOpacity
-            style={styles.webBtn}
-            onPress={() => onStatusChange(id, 'watchLater')}
+            style={styles.menuBtn}
+            onPress={() => setMenuOpen(true)}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <Text style={styles.webBtnText}>Later</Text>
+            <Text style={styles.menuBtnText}>⋯</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.webBtn, styles.webBtnRemove]}
-            onPress={() => onRemove(id)}
-          >
-            <Text style={styles.webBtnText}>✕</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+        )}
+        <TouchableOpacity
+          style={[styles.checkBtn, status === 'upToDate' && styles.checkBtnDone]}
+          onPress={onCheckPress}
+          activeOpacity={0.75}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Text style={styles.checkIcon}>✓</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 
   if (Platform.OS === 'web') {
-    return inner;
+    return (
+      <>
+        {rowContent}
+        <WebMenu
+          visible={menuOpen}
+          onClose={() => setMenuOpen(false)}
+          onWatchLater={() => onStatusChange(id, 'watchLater')}
+          onRemove={() => onRemove(id)}
+        />
+      </>
+    );
   }
 
   return (
@@ -157,7 +197,7 @@ export default function ShowRowTV({
       friction={2}
       rightThreshold={40}
     >
-      {inner}
+      {rowContent}
     </Swipeable>
   );
 }
@@ -167,7 +207,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#13141f',
-    paddingVertical: 14,
+    paddingVertical: 12,
     paddingHorizontal: 14,
     borderBottomWidth: 1,
     borderBottomColor: '#1e2030',
@@ -189,6 +229,7 @@ const styles = StyleSheet.create({
   info: {
     flex: 1,
     gap: 5,
+    justifyContent: 'center',
   },
   showPill: {
     flexDirection: 'row',
@@ -198,7 +239,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingHorizontal: 10,
     paddingVertical: 4,
-    maxWidth: '100%',
+    maxWidth: '90%',
   },
   showPillText: {
     color: '#c0c8d8',
@@ -229,7 +270,23 @@ const styles = StyleSheet.create({
   epName: {
     color: '#8892a4',
     fontSize: 13,
-    lineHeight: 18,
+  },
+  rightSide: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  menuBtn: {
+    width: 28,
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  menuBtnText: {
+    color: '#8892a4',
+    fontSize: 20,
+    letterSpacing: 1,
   },
   checkBtn: {
     width: 40,
@@ -238,10 +295,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#4caf50',
     justifyContent: 'center',
     alignItems: 'center',
-    flexShrink: 0,
   },
   checkBtnDone: {
-    backgroundColor: '#252840',
+    backgroundColor: '#2a2d3e',
   },
   checkIcon: {
     color: '#fff',
@@ -264,31 +320,43 @@ const styles = StyleSheet.create({
   removeBtn: {
     backgroundColor: '#e94560',
   },
-  actionIcon: {
+  actionEmoji: {
     color: '#fff',
-    fontSize: 18,
+    fontSize: 16,
   },
   actionText: {
     color: '#fff',
     fontSize: 11,
     fontWeight: '600',
   },
-  webActions: {
-    flexDirection: 'row',
-    gap: 6,
+  menuOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  webBtn: {
-    backgroundColor: '#f5a623',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
+  menuBox: {
+    backgroundColor: '#1e2030',
+    borderRadius: 14,
+    overflow: 'hidden',
+    width: 220,
+    borderWidth: 1,
+    borderColor: '#252840',
   },
-  webBtnRemove: {
-    backgroundColor: '#e94560',
+  menuItem: {
+    paddingVertical: 16,
+    paddingHorizontal: 20,
   },
-  webBtnText: {
+  menuItemText: {
     color: '#fff',
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  menuItemDanger: {
+    color: '#e94560',
+  },
+  menuDivider: {
+    height: 1,
+    backgroundColor: '#252840',
   },
 });

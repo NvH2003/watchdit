@@ -5,6 +5,7 @@ import {
   StyleSheet,
   TextInput,
   FlatList,
+  ScrollView,
   ActivityIndicator,
   TouchableOpacity,
   Image,
@@ -20,8 +21,10 @@ export default function DiscoverScreen() {
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<TmdbShow[]>([]);
   const [trending, setTrending] = useState<TmdbShow[]>([]);
+  const [popular, setPopular] = useState<TmdbShow[]>([]);
   const [searching, setSearching] = useState(false);
-  const [loadingTrending, setLoadingTrending] = useState(true);
+  const [loadingData, setLoadingData] = useState(true);
+  const [addingId, setAddingId] = useState<number | null>(null);
 
   const { user } = db.useAuth();
   const { data } = db.useQuery(
@@ -37,14 +40,19 @@ export default function DiscoverScreen() {
     useCallback(() => {
       let active = true;
       async function load() {
-        setLoadingTrending(true);
+        setLoadingData(true);
         try {
-          const res = await tmdb.getTrending();
-          if (active) setTrending(res.results.slice(0, 24));
+          const [trendRes, popRes] = await Promise.all([
+            tmdb.getTrending(),
+            tmdb.getPopular(),
+          ]);
+          if (!active) return;
+          setTrending(trendRes.results.slice(0, 20));
+          setPopular(popRes.results.slice(0, 20));
         } catch (e) {
-          console.warn('Failed to load trending', e);
+          console.warn('Failed to load discover data', e);
         } finally {
-          if (active) setLoadingTrending(false);
+          if (active) setLoadingData(false);
         }
       }
       load();
@@ -72,60 +80,36 @@ export default function DiscoverScreen() {
   }, [query]);
 
   async function addShow(show: TmdbShow) {
-    if (!user || addedShowIds.has(show.id)) return;
-    await db.transact([
-      db.tx.userShows[instantId()].update({
-        tmdbShowId: show.id,
-        tmdbShowName: show.name,
-        tmdbPosterPath: show.poster_path ?? '',
-        status: 'watching',
-        addedAt: new Date().toISOString(),
-      }).link({ $user: user.id }),
-    ]);
+    if (!user || addedShowIds.has(show.id) || addingId === show.id) return;
+    setAddingId(show.id);
+    try {
+      const details = await tmdb.getShow(show.id);
+      const firstSeason = details.number_of_seasons && details.number_of_seasons > 0
+        ? await tmdb.getSeason(show.id, 1)
+        : null;
+      const firstEp = firstSeason?.episodes?.[0] ?? null;
+
+      await db.transact([
+        db.tx.userShows[instantId()].update({
+          tmdbShowId: show.id,
+          tmdbShowName: show.name,
+          tmdbPosterPath: show.poster_path ?? '',
+          status: 'watching',
+          addedAt: new Date().toISOString(),
+          totalEpisodes: details.number_of_episodes ?? 0,
+          nextSeasonNum: firstEp ? firstEp.season_number : 1,
+          nextEpisodeNum: firstEp ? firstEp.episode_number : 1,
+          nextEpisodeName: firstEp?.name ?? '',
+        }).link({ $user: user.id }),
+      ]);
+    } catch (e) {
+      console.warn('Failed to add show', e);
+    } finally {
+      setAddingId(null);
+    }
   }
 
-  const displayList = query.trim() ? searchResults : trending;
-  const isLoading = query.trim() ? searching : loadingTrending;
-
-  function renderItem({ item }: { item: TmdbShow }) {
-    const poster = posterUrl(item.poster_path, 'w185');
-    const added = addedShowIds.has(item.id);
-
-    return (
-      <TouchableOpacity
-        style={styles.resultRow}
-        onPress={() => router.push(`/show/${item.id}`)}
-        activeOpacity={0.8}
-      >
-        {poster ? (
-          <Image source={{ uri: poster }} style={styles.poster} />
-        ) : (
-          <View style={[styles.poster, styles.posterPlaceholder]}>
-            <Text style={styles.posterEmoji}>📺</Text>
-          </View>
-        )}
-        <View style={styles.info}>
-          <Text style={styles.showName} numberOfLines={1}>
-            {item.name}
-          </Text>
-          {item.first_air_date ? (
-            <Text style={styles.year}>{item.first_air_date.slice(0, 4)}</Text>
-          ) : null}
-          <Text style={styles.overview} numberOfLines={2}>
-            {item.overview}
-          </Text>
-        </View>
-        <TouchableOpacity
-          style={[styles.addBtn, added && styles.addedBtn]}
-          onPress={() => addShow(item)}
-          disabled={added}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Text style={styles.addBtnText}>{added ? '✓' : '+'}</Text>
-        </TouchableOpacity>
-      </TouchableOpacity>
-    );
-  }
+  const isSearching = query.trim().length > 0;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -137,45 +121,173 @@ export default function DiscoverScreen() {
         <Text style={styles.searchIcon}>🔍</Text>
         <TextInput
           style={styles.searchInput}
-          placeholder="Search shows..."
+          placeholder="Search shows and movies"
           placeholderTextColor="#555"
           value={query}
           onChangeText={setQuery}
           returnKeyType="search"
-          clearButtonMode="while-editing"
         />
         {query ? (
-          <TouchableOpacity
-            onPress={() => setQuery('')}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
+          <TouchableOpacity onPress={() => setQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Text style={styles.clearText}>✕</Text>
           </TouchableOpacity>
         ) : null}
       </View>
 
-      {!query.trim() && (
-        <Text style={styles.sectionLabel}>Trending This Week</Text>
-      )}
-
-      {isLoading ? (
-        <ActivityIndicator color="#e94560" style={styles.loader} />
-      ) : (
-        <FlatList
-          data={displayList}
-          keyExtractor={item => String(item.id)}
-          renderItem={renderItem}
-          contentContainerStyle={styles.listContent}
-          ListEmptyComponent={
-            query.trim() ? (
+      {isSearching ? (
+        searching ? (
+          <ActivityIndicator color="#e94560" style={styles.loader} />
+        ) : (
+          <FlatList
+            data={searchResults}
+            keyExtractor={item => String(item.id)}
+            renderItem={({ item }) => (
+              <SearchResultRow
+                item={item}
+                added={addedShowIds.has(item.id)}
+                adding={addingId === item.id}
+                onPress={() => router.push(`/show/${item.id}`)}
+                onAdd={() => addShow(item)}
+              />
+            )}
+            contentContainerStyle={styles.listContent}
+            ListEmptyComponent={
               <View style={styles.center}>
                 <Text style={styles.emptyText}>No results for "{query}"</Text>
               </View>
-            ) : null
-          }
-        />
+            }
+          />
+        )
+      ) : loadingData ? (
+        <ActivityIndicator color="#e94560" style={styles.loader} />
+      ) : (
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <HorizontalSection
+            title="Shows for you"
+            data={popular}
+            addedIds={addedShowIds}
+            addingId={addingId}
+            onPress={id => router.push(`/show/${id}`)}
+            onAdd={show => addShow(show)}
+          />
+          <HorizontalSection
+            title="Trending shows"
+            data={trending}
+            addedIds={addedShowIds}
+            addingId={addingId}
+            onPress={id => router.push(`/show/${id}`)}
+            onAdd={show => addShow(show)}
+          />
+          <TouchableOpacity style={styles.browseAll} onPress={() => setQuery(' ')}>
+            <Text style={styles.browseAllText}>BROWSE ALL SHOWS</Text>
+          </TouchableOpacity>
+        </ScrollView>
       )}
     </SafeAreaView>
+  );
+}
+
+function HorizontalSection({
+  title,
+  data,
+  addedIds,
+  addingId,
+  onPress,
+  onAdd,
+}: {
+  title: string;
+  data: TmdbShow[];
+  addedIds: Set<number>;
+  addingId: number | null;
+  onPress: (id: number) => void;
+  onAdd: (show: TmdbShow) => void;
+}) {
+  return (
+    <View style={styles.section}>
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>{title}</Text>
+        <Text style={styles.sectionMore}>See all ›</Text>
+      </View>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.hScroll}>
+        {data.map(show => {
+          const poster = posterUrl(show.poster_path, 'w342');
+          const added = addedIds.has(show.id);
+          const adding = addingId === show.id;
+          return (
+            <TouchableOpacity
+              key={show.id}
+              style={styles.posterCard}
+              onPress={() => onPress(show.id)}
+              activeOpacity={0.8}
+            >
+              {poster ? (
+                <Image source={{ uri: poster }} style={styles.hPoster} />
+              ) : (
+                <View style={[styles.hPoster, styles.hPosterPlaceholder]}>
+                  <Text style={styles.hPosterEmoji}>📺</Text>
+                </View>
+              )}
+              <TouchableOpacity
+                style={[styles.addOverlay, added && styles.addOverlayDone]}
+                onPress={() => onAdd(show)}
+                disabled={added || adding}
+              >
+                {adding ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Text style={styles.addOverlayText}>{added ? '✓' : '+'}</Text>
+                )}
+              </TouchableOpacity>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+function SearchResultRow({
+  item,
+  added,
+  adding,
+  onPress,
+  onAdd,
+}: {
+  item: TmdbShow;
+  added: boolean;
+  adding: boolean;
+  onPress: () => void;
+  onAdd: () => void;
+}) {
+  const poster = posterUrl(item.poster_path, 'w185');
+  return (
+    <TouchableOpacity style={styles.resultRow} onPress={onPress} activeOpacity={0.8}>
+      {poster ? (
+        <Image source={{ uri: poster }} style={styles.resultPoster} />
+      ) : (
+        <View style={[styles.resultPoster, styles.hPosterPlaceholder]}>
+          <Text style={styles.hPosterEmoji}>📺</Text>
+        </View>
+      )}
+      <View style={styles.resultInfo}>
+        <Text style={styles.resultName} numberOfLines={1}>{item.name}</Text>
+        {item.first_air_date ? (
+          <Text style={styles.resultYear}>{item.first_air_date.slice(0, 4)}</Text>
+        ) : null}
+        <Text style={styles.resultOverview} numberOfLines={2}>{item.overview}</Text>
+      </View>
+      <TouchableOpacity
+        style={[styles.addBtn, added && styles.addBtnDone]}
+        onPress={onAdd}
+        disabled={added || adding}
+      >
+        {adding ? (
+          <ActivityIndicator color="#fff" size="small" />
+        ) : (
+          <Text style={styles.addBtnText}>{added ? '✓' : '+'}</Text>
+        )}
+      </TouchableOpacity>
+    </TouchableOpacity>
   );
 }
 
@@ -188,7 +300,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#1c1f2e',
+    borderBottomColor: '#1e2030',
   },
   headerTitle: {
     color: '#fff',
@@ -198,9 +310,8 @@ const styles = StyleSheet.create({
   searchWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    margin: 16,
-    marginBottom: 8,
-    backgroundColor: '#1c1f2e',
+    margin: 14,
+    backgroundColor: '#1e2030',
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 10,
@@ -208,31 +319,98 @@ const styles = StyleSheet.create({
     borderColor: '#252840',
   },
   searchIcon: {
-    fontSize: 16,
+    fontSize: 15,
     marginRight: 8,
   },
   searchInput: {
     flex: 1,
     color: '#fff',
-    fontSize: 16,
+    fontSize: 15,
   },
   clearText: {
     color: '#8892a4',
     fontSize: 16,
     paddingLeft: 8,
   },
-  sectionLabel: {
-    color: '#8892a4',
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-    paddingHorizontal: 16,
-    marginTop: 8,
-    marginBottom: 4,
-  },
   loader: {
     marginTop: 48,
+  },
+  scrollContent: {
+    paddingBottom: 32,
+  },
+  section: {
+    marginBottom: 24,
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    color: '#fff',
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  sectionMore: {
+    color: '#8892a4',
+    fontSize: 13,
+  },
+  hScroll: {
+    paddingHorizontal: 16,
+    gap: 10,
+  },
+  posterCard: {
+    width: 110,
+    position: 'relative',
+  },
+  hPoster: {
+    width: 110,
+    height: 160,
+    borderRadius: 8,
+    backgroundColor: '#252840',
+  },
+  hPosterPlaceholder: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  hPosterEmoji: {
+    fontSize: 28,
+  },
+  addOverlay: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#e94560',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  addOverlayDone: {
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  addOverlayText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  browseAll: {
+    marginHorizontal: 16,
+    marginTop: 8,
+    backgroundColor: '#e94560',
+    borderRadius: 12,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  browseAllText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 1,
   },
   listContent: {
     paddingBottom: 32,
@@ -243,37 +421,30 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1c1f2e',
+    borderBottomColor: '#1e2030',
   },
-  poster: {
+  resultPoster: {
     width: 52,
     height: 78,
     borderRadius: 6,
     marginRight: 14,
     backgroundColor: '#252840',
   },
-  posterPlaceholder: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  posterEmoji: {
-    fontSize: 22,
-  },
-  info: {
+  resultInfo: {
     flex: 1,
   },
-  showName: {
+  resultName: {
     color: '#fff',
     fontSize: 15,
     fontWeight: '600',
     marginBottom: 2,
   },
-  year: {
+  resultYear: {
     color: '#e94560',
     fontSize: 12,
     marginBottom: 4,
   },
-  overview: {
+  resultOverview: {
     color: '#8892a4',
     fontSize: 12,
     lineHeight: 16,
@@ -287,7 +458,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginLeft: 12,
   },
-  addedBtn: {
+  addBtnDone: {
     backgroundColor: '#252840',
   },
   addBtnText: {

@@ -11,6 +11,10 @@ const _schema = i.schema({
       tmdbPosterPath: i.string().optional(),
       status: i.string(), // watching | watchLater | finished | upToDate
       addedAt: i.date(),
+      totalEpisodes: i.number().optional(),
+      nextSeasonNum: i.number().optional(),
+      nextEpisodeNum: i.number().optional(),
+      nextEpisodeName: i.string().optional(),
     }),
     watchedEpisodes: i.entity({
       tmdbShowId: i.number().indexed(),

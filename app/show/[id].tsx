@@ -83,7 +83,6 @@ export default function ShowDetailScreen() {
 
   async function toggleEpisode(seasonNum: number, episodeNum: number) {
     if (!user) return;
-    const key = `${seasonNum}x${episodeNum}`;
     const existing = watchedEps.find(
       e => e.seasonNumber === seasonNum && e.episodeNumber === episodeNum
     );
@@ -99,6 +98,32 @@ export default function ShowDetailScreen() {
         }).link({ $user: user.id }),
       ]);
     }
+    // Sync next episode info back to userShow so Episodes tab stays up to date
+    if (userShow) {
+      syncNextEpisode(userShow.id);
+    }
+  }
+
+  function syncNextEpisode(userShowId: string) {
+    if (!seasons.length) return;
+    const allEps = seasons.flatMap(s =>
+      (s.episodes ?? []).map(e => ({ season: s.season_number, ep: e.episode_number, name: e.name }))
+    );
+    const newWatchedSet = new Set([
+      ...watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`),
+    ]);
+    const nextEp = allEps.find(e => !newWatchedSet.has(`${e.season}x${e.ep}`));
+    const totalEps = allEps.length;
+    const updates: Record<string, unknown> = { totalEpisodes: totalEps };
+    if (nextEp) {
+      updates.nextSeasonNum = nextEp.season;
+      updates.nextEpisodeNum = nextEp.ep;
+      updates.nextEpisodeName = nextEp.name;
+      updates.status = 'watching';
+    } else {
+      updates.status = 'upToDate';
+    }
+    db.transact([db.tx.userShows[userShowId].update(updates)]);
   }
 
   async function markSeasonWatched(season: TmdbSeason) {
@@ -122,6 +147,9 @@ export default function ShowDetailScreen() {
           }).link({ $user: user.id })
         )
       );
+    }
+    if (userShow) {
+      setTimeout(() => syncNextEpisode(userShow.id), 300);
     }
   }
 

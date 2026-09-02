@@ -1,10 +1,10 @@
 import { init } from '@instantdb/react-native';
 import schema from '../instant.schema';
 
-const APP_ID = process.env.EXPO_PUBLIC_INSTANT_APP_ID ?? '';
+export const instantAppId = (process.env.EXPO_PUBLIC_INSTANT_APP_ID ?? '').trim();
 
 const db = init({
-  appId: APP_ID,
+  appId: instantAppId || '00000000-0000-0000-0000-000000000000',
   schema,
   // Don't block the live connection if production is missing newer attrs (e.g. credentials).
   disableValidation: true,

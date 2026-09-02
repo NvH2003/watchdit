@@ -8,7 +8,7 @@ import { Platform } from 'react-native';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/components/useColorScheme';
-import db from '@/lib/db';
+import db, { instantAppId } from '@/lib/db';
 import AuthScreen from '@/components/AuthScreen';
 import HeaderBackButton from '@/components/HeaderBackButton';
 import { InstantConnecting, InstantUnreachable } from '@/components/InstantGate';
@@ -43,6 +43,25 @@ export default function RootLayout() {
 
 function RootLayoutNav() {
   const colorScheme = useColorScheme();
+
+  if (!instantAppId) {
+    return (
+      <InstantUnreachable
+        title="Missing Instant App ID"
+        body="Add EXPO_PUBLIC_INSTANT_APP_ID in Vercel → Settings → Environment Variables (Production), then Redeploy. Expo bakes this in at build time."
+        onRetry={() => {
+          if (Platform.OS === 'web' && typeof window !== 'undefined') {
+            window.location.reload();
+          }
+        }}
+      />
+    );
+  }
+
+  return <InstantSession colorScheme={colorScheme} />;
+}
+
+function InstantSession({ colorScheme }: { colorScheme: ReturnType<typeof useColorScheme> }) {
   const { isLoading, user, error } = db.useAuth();
   const status = db.useConnectionStatus();
   const [timedOut, setTimedOut] = useState(false);

@@ -11,19 +11,20 @@ export function InstantConnecting() {
 }
 
 export function InstantUnreachable({
+  title = "Can't reach Instant",
+  body = "The app couldn't open a live connection. Check your network, VPN, and that EXPO_PUBLIC_INSTANT_APP_ID matches the App ID in the Instant dashboard.",
   detail,
   onRetry,
 }: {
+  title?: string;
+  body?: string;
   detail?: string;
   onRetry: () => void;
 }) {
   return (
     <View style={styles.wrap}>
-      <Text style={styles.title}>Can't reach Instant</Text>
-      <Text style={styles.body}>
-        The app couldn't open a live connection. Check your network, VPN, and that
-        EXPO_PUBLIC_INSTANT_APP_ID matches the App ID in the Instant dashboard.
-      </Text>
+      <Text style={styles.title}>{title}</Text>
+      <Text style={styles.body}>{body}</Text>
       {detail ? <Text style={styles.detail}>{detail}</Text> : null}
       <TouchableOpacity accessibilityRole="button" style={styles.button} onPress={onRetry}>
         <Text style={styles.buttonText}>Try again</Text>

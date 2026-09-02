@@ -20,6 +20,7 @@ import {
 } from '@/lib/history';
 import { matchesQuery } from '@/components/SearchField';
 import FilterToolbar from '@/components/ListFilter';
+import TabScreen from '@/components/TabScreen';
 import InstallApp from '@/components/InstallApp';
 import { CollapsibleScrollView } from '@/components/TabBarCollapse';
 

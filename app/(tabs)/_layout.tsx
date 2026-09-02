@@ -2,24 +2,52 @@ import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
+import { theme } from '@/constants/theme';
+import {
+  CollapsingTabBar,
+  CollapsingTabLabel,
+  TabBarCollapseProvider,
+  useExpandTabBar,
+} from '@/components/TabBarCollapse';
 
-export default function TabLayout() {
+function TabLayoutInner() {
   const colorScheme = useColorScheme() ?? 'dark';
+  const expandTabBar = useExpandTabBar();
 
   return (
     <Tabs
+      tabBar={props => <CollapsingTabBar {...props} />}
+      screenListeners={{
+        tabPress: () => expandTabBar(),
+      }}
       screenOptions={{
+        sceneStyle: { backgroundColor: theme.bg },
         tabBarActiveTintColor: Colors[colorScheme].tint,
         tabBarInactiveTintColor: Colors[colorScheme].tabIconDefault,
+        tabBarHideOnKeyboard: true,
+        tabBarLabelPosition: 'below-icon',
+        tabBarItemStyle: {
+          alignItems: 'center',
+          justifyContent: 'center',
+        },
+        tabBarActiveBackgroundColor: 'transparent',
+        tabBarInactiveBackgroundColor: 'transparent',
+        tabBarLabel: ({ children, color }) => (
+          <CollapsingTabLabel color={String(color)}>{children}</CollapsingTabLabel>
+        ),
         tabBarStyle: {
-          backgroundColor: '#131520',
-          borderTopColor: '#1c1f2e',
-          borderTopWidth: 1,
+          position: 'relative',
+          backgroundColor: 'transparent',
+          borderTopWidth: 0,
+          elevation: 0,
+          height: '100%',
+          paddingTop: 0,
+          paddingBottom: 0,
         },
         headerStyle: {
-          backgroundColor: '#0d0f14',
+          backgroundColor: 'transparent',
         },
-        headerTintColor: '#fff',
+        headerTintColor: theme.text,
         headerShadowVisible: false,
       }}
     >
@@ -30,6 +58,16 @@ export default function TabLayout() {
           headerShown: false,
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="tv-outline" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="movies"
+        options={{
+          title: 'Movies',
+          headerShown: false,
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="film-outline" size={size} color={color} />
           ),
         }}
       />
@@ -54,5 +92,13 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+  );
+}
+
+export default function TabLayout() {
+  return (
+    <TabBarCollapseProvider>
+      <TabLayoutInner />
+    </TabBarCollapseProvider>
   );
 }

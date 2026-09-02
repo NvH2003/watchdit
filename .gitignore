@@ -3,6 +3,7 @@ node_modules/
 dist/
 web-build/
 .env
+.vercel
 *.orig.*
 *.jks
 *.p8

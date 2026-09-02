@@ -2,12 +2,18 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { useFonts } from 'expo-font';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
+import { StatusBar } from 'expo-status-bar';
+import { useEffect, useState } from 'react';
+import { Platform } from 'react-native';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/components/useColorScheme';
 import db from '@/lib/db';
 import AuthScreen from '@/components/AuthScreen';
+import HeaderBackButton from '@/components/HeaderBackButton';
+import { InstantConnecting, InstantUnreachable } from '@/components/InstantGate';
+import { theme } from '@/constants/theme';
+import { useDedupeUserShows } from '@/lib/userShows';
 
 export { ErrorBoundary } from 'expo-router';
 
@@ -37,17 +43,60 @@ export default function RootLayout() {
 
 function RootLayoutNav() {
   const colorScheme = useColorScheme();
-  const { isLoading, user } = db.useAuth();
+  const { isLoading, user, error } = db.useAuth();
+  const status = db.useConnectionStatus();
+  const [timedOut, setTimedOut] = useState(false);
+  useDedupeUserShows();
 
-  if (isLoading) return null;
+  useEffect(() => {
+    if (!isLoading) {
+      setTimedOut(false);
+      return;
+    }
+    const timer = setTimeout(() => setTimedOut(true), 8000);
+    return () => clearTimeout(timer);
+  }, [isLoading]);
+
+  const unreachable =
+    Boolean(error) ||
+    status === 'errored' ||
+    (isLoading && (timedOut || status === 'closed'));
+
+  if (unreachable && !user) {
+    return (
+      <InstantUnreachable
+        detail={error?.message ?? (status === 'errored' ? 'WebSocket connection failed' : undefined)}
+        onRetry={() => {
+          if (Platform.OS === 'web' && typeof window !== 'undefined') {
+            window.location.reload();
+          } else {
+            setTimedOut(false);
+          }
+        }}
+      />
+    );
+  }
+
+  if (isLoading) return <InstantConnecting />;
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
+      <StatusBar style="light" />
       <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
         {user ? (
-          <Stack>
+          <Stack
+            screenOptions={{
+              headerStyle: { backgroundColor: theme.bg },
+              headerTintColor: theme.text,
+              headerShadowVisible: false,
+              headerTitleStyle: { fontWeight: '600' },
+              headerLeft: () => <HeaderBackButton />,
+            }}
+          >
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="show/[id]" options={{ headerShown: false }} />
+            <Stack.Screen name="show/[id]" options={{ title: '' }} />
+            <Stack.Screen name="movie/[id]" options={{ title: '' }} />
+            <Stack.Screen name="import" options={{ title: 'Import from TV Time' }} />
           </Stack>
         ) : (
           <AuthScreen />

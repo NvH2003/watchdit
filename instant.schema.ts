@@ -1,9 +1,10 @@
-import { i } from '@instantdb/react-native';
+import { i } from '@instantdb/core';
 
 const _schema = i.schema({
   entities: {
     $users: i.entity({
       email: i.string().unique().indexed(),
+      passwordHash: i.string().optional(),
     }),
     userShows: i.entity({
       tmdbShowId: i.number().indexed(),
@@ -15,12 +16,36 @@ const _schema = i.schema({
       nextSeasonNum: i.number().optional(),
       nextEpisodeNum: i.number().optional(),
       nextEpisodeName: i.string().optional(),
+      nextEpisodeAirDate: i.string().optional(),
+      nextEpisodeStillPath: i.string().optional(),
+      unwatchedAiredCount: i.number().optional(),
+      remainingAiredCount: i.number().optional(),
+      tvTimeSeriesId: i.number().optional(),
+      lastTouchedAt: i.date().optional().indexed(),
+      tmdbOriginalLanguage: i.string().optional(),
+      ownerShowKey: i.string().unique().indexed().optional(),
     }),
     watchedEpisodes: i.entity({
       tmdbShowId: i.number().indexed(),
       seasonNumber: i.number(),
       episodeNumber: i.number(),
       watchedAt: i.date(),
+    }),
+    userMovies: i.entity({
+      tmdbMovieId: i.number().indexed(),
+      tmdbMovieName: i.string(),
+      tmdbPosterPath: i.string().optional(),
+      status: i.string(), // watching | watchLater | finished
+      addedAt: i.date(),
+      watchedAt: i.date().optional(),
+      lastTouchedAt: i.date().optional().indexed(),
+      tmdbReleaseDate: i.string().optional(),
+      runtime: i.number().optional(),
+      ownerMovieKey: i.string().unique().indexed().optional(),
+    }),
+    credentials: i.entity({
+      email: i.string().unique().indexed(),
+      passwordHash: i.string(),
     }),
   },
   links: {
@@ -31,6 +56,10 @@ const _schema = i.schema({
     watchedEpisodeOwner: {
       forward: { on: 'watchedEpisodes', has: 'one', label: '$user' },
       reverse: { on: '$users', has: 'many', label: 'episodes' },
+    },
+    userMovieOwner: {
+      forward: { on: 'userMovies', has: 'one', label: '$user' },
+      reverse: { on: '$users', has: 'many', label: 'movies' },
     },
   },
 });

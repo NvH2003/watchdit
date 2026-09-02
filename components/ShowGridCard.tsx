@@ -1,10 +1,13 @@
 import { TouchableOpacity, Image, Text, View, StyleSheet } from 'react-native';
 import { posterUrl } from '@/lib/tmdb';
+import { theme } from '@/constants/theme';
 
 interface ShowGridCardProps {
   name: string;
   posterPath: string | null | undefined;
   unwatchedCount?: number;
+  watchedCount?: number;
+  totalEpisodes?: number;
   onPress: () => void;
 }
 
@@ -12,24 +15,37 @@ export default function ShowGridCard({
   name,
   posterPath,
   unwatchedCount,
+  watchedCount,
+  totalEpisodes,
   onPress,
 }: ShowGridCardProps) {
   const poster = posterUrl(posterPath, 'w342');
+  const progress =
+    totalEpisodes && totalEpisodes > 0 && watchedCount != null
+      ? Math.min(watchedCount / totalEpisodes, 1)
+      : null;
 
   return (
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.8}>
-      {poster ? (
-        <Image source={{ uri: poster }} style={styles.poster} />
-      ) : (
-        <View style={[styles.poster, styles.placeholder]}>
-          <Text style={styles.placeholderEmoji}>📺</Text>
-        </View>
-      )}
-      {unwatchedCount && unwatchedCount > 0 ? (
-        <View style={styles.badge}>
-          <Text style={styles.badgeText}>{unwatchedCount}</Text>
-        </View>
-      ) : null}
+      <View style={styles.posterWrapper}>
+        {poster ? (
+          <Image source={{ uri: poster }} style={styles.poster} />
+        ) : (
+          <View style={[styles.poster, styles.placeholder]}>
+            <Text style={styles.placeholderEmoji}>📺</Text>
+          </View>
+        )}
+        {unwatchedCount && unwatchedCount > 0 ? (
+          <View style={styles.badge}>
+            <Text style={styles.badgeText}>{unwatchedCount}</Text>
+          </View>
+        ) : null}
+        {progress !== null && (
+          <View style={styles.progressBar}>
+            <View style={[styles.progressFill, { width: `${Math.round(progress * 100)}%` as any, backgroundColor: progress >= 1 ? theme.check : theme.gold }]} />
+          </View>
+        )}
+      </View>
       <Text style={styles.name} numberOfLines={2}>
         {name}
       </Text>
@@ -43,11 +59,16 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     maxWidth: '48%',
   },
-  poster: {
+  posterWrapper: {
     width: '100%',
     aspectRatio: 2 / 3,
     borderRadius: 8,
-    backgroundColor: '#252840',
+    overflow: 'hidden',
+    backgroundColor: theme.elevated,
+  },
+  poster: {
+    width: '100%',
+    height: '100%',
   },
   placeholder: {
     justifyContent: 'center',
@@ -60,7 +81,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 8,
     right: 8,
-    backgroundColor: '#e94560',
+    backgroundColor: theme.accent,
     borderRadius: 12,
     minWidth: 24,
     height: 24,
@@ -69,12 +90,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
   },
   badgeText: {
-    color: '#fff',
+    color: theme.text,
     fontSize: 12,
     fontWeight: '700',
   },
+  progressBar: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 4,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  progressFill: {
+    height: '100%',
+    backgroundColor: theme.gold,
+  },
   name: {
-    color: '#fff',
+    color: theme.text,
     fontSize: 13,
     marginTop: 8,
     fontWeight: '500',

@@ -8,21 +8,55 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  ScrollView,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import db from '@/lib/db';
+import { signInWithPassword, signUpWithPassword } from '@/lib/passwordAuth';
+import { theme } from '@/constants/theme';
 
-type Step = 'email' | 'code';
+type Step = 'password' | 'code';
 
 export default function AuthScreen() {
-  const [step, setStep] = useState<Step>('email');
+  const [step, setStep] = useState<Step>('password');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  async function signIn() {
+    if (!email.trim() || !password) return;
+    setLoading(true);
+    setError('');
+    try {
+      await signInWithPassword(email, password);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Something went wrong');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createAccount() {
+    if (!email.trim() || !password) return;
+    setLoading(true);
+    setError('');
+    try {
+      await signUpWithPassword(email, password);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Something went wrong');
+    } finally {
+      setLoading(false);
+    }
+  }
+
   async function sendCode() {
     const trimmed = email.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      setError('Enter your email first');
+      return;
+    }
     setLoading(true);
     setError('');
     try {
@@ -50,95 +84,143 @@ export default function AuthScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <View style={styles.inner}>
-        <Text style={styles.logo}>📺</Text>
-        <Text style={styles.title}>TV Time</Text>
-        <Text style={styles.subtitle}>
-          {step === 'email'
-            ? 'Track every show you watch'
-            : `Check your inbox — we sent a code to ${email}`}
-        </Text>
+    <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
+      <KeyboardAvoidingView
+        style={styles.keyboard}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+        >
+          <View style={styles.inner}>
+            <Text style={styles.logo}>📺</Text>
+            <Text style={styles.title}>Watch'd It</Text>
+            <Text style={styles.subtitle}>
+              {step === 'password'
+                ? 'Track every show you watch'
+                : `Check your inbox — we sent a code to ${email}`}
+            </Text>
 
-        {step === 'email' ? (
-          <>
-            <TextInput
-              style={styles.input}
-              placeholder="your@email.com"
-              placeholderTextColor="#444"
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoComplete="email"
-              onSubmitEditing={sendCode}
-              returnKeyType="done"
-            />
-            <TouchableOpacity
-              style={[styles.button, loading && styles.buttonDisabled]}
-              onPress={sendCode}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.buttonText}>Continue with email</Text>
-              )}
-            </TouchableOpacity>
-          </>
-        ) : (
-          <>
-            <TextInput
-              style={styles.input}
-              placeholder="6-digit code"
-              placeholderTextColor="#444"
-              value={code}
-              onChangeText={setCode}
-              keyboardType="number-pad"
-              maxLength={6}
-              autoFocus
-              onSubmitEditing={verifyCode}
-              returnKeyType="done"
-            />
-            <TouchableOpacity
-              style={[styles.button, loading && styles.buttonDisabled]}
-              onPress={verifyCode}
-              disabled={loading}
-            >
-              {loading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.buttonText}>Sign in</Text>
-              )}
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.backBtn}
-              onPress={() => { setStep('email'); setCode(''); setError(''); }}
-            >
-              <Text style={styles.backText}>← Use a different email</Text>
-            </TouchableOpacity>
-          </>
-        )}
+            {step === 'password' ? (
+              <>
+                <TextInput
+                  style={styles.input}
+                  placeholder="your@email.com"
+                  placeholderTextColor={theme.faint}
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="email"
+                  textContentType="emailAddress"
+                  returnKeyType="next"
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Password"
+                  placeholderTextColor={theme.faint}
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="password"
+                  textContentType="password"
+                  onSubmitEditing={signIn}
+                  returnKeyType="done"
+                />
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={[styles.button, loading && styles.buttonDisabled]}
+                  onPress={signIn}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.buttonText}>Sign in</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={[styles.secondaryButton, loading && styles.buttonDisabled]}
+                  onPress={createAccount}
+                  disabled={loading}
+                >
+                  <Text style={styles.secondaryButtonText}>Create account</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={styles.backBtn}
+                  onPress={sendCode}
+                  disabled={loading}
+                >
+                  <Text style={styles.backText}>Email me a code instead</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <TextInput
+                  style={styles.input}
+                  placeholder="6-digit code"
+                  placeholderTextColor={theme.faint}
+                  value={code}
+                  onChangeText={setCode}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  autoFocus
+                  onSubmitEditing={verifyCode}
+                  returnKeyType="done"
+                />
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={[styles.button, loading && styles.buttonDisabled]}
+                  onPress={verifyCode}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.buttonText}>Sign in</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={styles.backBtn}
+                  onPress={() => { setStep('password'); setCode(''); setError(''); }}
+                >
+                  <Text style={styles.backText}>← Use email and password</Text>
+                </TouchableOpacity>
+              </>
+            )}
 
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-      </View>
-    </KeyboardAvoidingView>
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0d0f14',
+    backgroundColor: theme.bg,
+  },
+  keyboard: {
+    flex: 1,
+  },
+  scroll: {
+    flexGrow: 1,
   },
   inner: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 32,
+    paddingVertical: 32,
   },
   logo: {
     fontSize: 72,
@@ -147,13 +229,13 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 34,
     fontWeight: '700',
-    color: '#fff',
+    color: theme.text,
     marginBottom: 10,
     letterSpacing: 0.5,
   },
   subtitle: {
     fontSize: 15,
-    color: '#8892a4',
+    color: theme.muted,
     marginBottom: 40,
     textAlign: 'center',
     lineHeight: 22,
@@ -161,29 +243,46 @@ const styles = StyleSheet.create({
   input: {
     width: '100%',
     height: 52,
-    backgroundColor: '#1c1f2e',
+    backgroundColor: theme.elevated,
     borderRadius: 12,
     paddingHorizontal: 16,
-    color: '#fff',
+    color: theme.text,
     fontSize: 16,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#252840',
+    borderColor: theme.border,
   },
   button: {
     width: '100%',
     height: 52,
-    backgroundColor: '#e94560',
+    backgroundColor: theme.accent,
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 12,
   },
+  secondaryButton: {
+    width: '100%',
+    height: 52,
+    backgroundColor: 'transparent',
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: theme.border,
+  },
   buttonDisabled: {
     opacity: 0.6,
   },
   buttonText: {
-    color: '#fff',
+    color: theme.text,
+    fontSize: 16,
+    fontWeight: '600',
+    letterSpacing: 0.3,
+  },
+  secondaryButtonText: {
+    color: theme.text,
     fontSize: 16,
     fontWeight: '600',
     letterSpacing: 0.3,
@@ -193,11 +292,11 @@ const styles = StyleSheet.create({
     padding: 8,
   },
   backText: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 14,
   },
   error: {
-    color: '#e94560',
+    color: theme.accent,
     fontSize: 14,
     marginTop: 12,
     textAlign: 'center',

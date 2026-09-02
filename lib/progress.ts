@@ -1,0 +1,252 @@
+import { tmdb } from './tmdb';
+
+export function parseAirDay(iso?: string | null): Date | null {
+  if (!iso) return null;
+  const day = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (day) {
+    return new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3]));
+  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+/** True only when TMDB has a real air date that is today or earlier. Missing dates are not out. */
+export function hasAired(iso?: string | null): boolean {
+  const air = parseAirDay(iso);
+  if (!air) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return air.getTime() <= today.getTime();
+}
+
+/** True when TMDB has a real air date in the future (not a placeholder episode). */
+export function isFutureAirDate(iso?: string | null): boolean {
+  const air = parseAirDay(iso);
+  if (!air) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return air.getTime() > today.getTime();
+}
+
+/** TMDB TV status: Ended / Canceled vs still running. */
+export function isShowEnded(tmdbStatus?: string | null): boolean {
+  const s = (tmdbStatus ?? '').toLowerCase();
+  return s === 'ended' || s === 'canceled' || s === 'cancelled';
+}
+
+export type ProgressEpisode = {
+  season: number;
+  ep: number;
+  name: string;
+  airDate: string;
+  stillPath?: string | null;
+};
+
+export type WatchStatus = 'watching' | 'upToDate' | 'finished';
+
+export type ProgressResult = {
+  status: WatchStatus;
+  nextSeasonNum?: number;
+  nextEpisodeNum?: number;
+  nextEpisodeName?: string;
+  nextEpisodeAirDate?: string;
+  nextEpisodeStillPath?: string;
+  originalLanguage?: string;
+  totalEpisodes?: number;
+  unwatchedAiredCount?: number;
+  remainingAiredCount?: number;
+};
+
+/**
+ * watching  — unwatched episodes that have already aired
+ * upToDate  — all aired episodes watched, show still running
+ * finished  — all episodes watched, show has ended
+ */
+export function computeProgress(
+  episodes: ProgressEpisode[],
+  watched: Set<string>,
+  tmdbStatus?: string | null
+): ProgressResult {
+  const unwatched = episodes.filter(
+    e => e.season > 0 && !watched.has(`${e.season}x${e.ep}`)
+  );
+  const unwatchedAired = unwatched.filter(e => hasAired(e.airDate));
+  const nextAired = unwatchedAired[0];
+  const nextFuture = unwatched.find(e => isFutureAirDate(e.airDate));
+  const ended = isShowEnded(tmdbStatus);
+
+  if (nextAired) {
+    return {
+      status: 'watching',
+      nextSeasonNum: nextAired.season,
+      nextEpisodeNum: nextAired.ep,
+      nextEpisodeName: nextAired.name,
+      nextEpisodeAirDate: nextAired.airDate,
+      nextEpisodeStillPath: nextAired.stillPath ?? '',
+      totalEpisodes: episodes.length,
+      unwatchedAiredCount: unwatchedAired.length,
+      remainingAiredCount: Math.max(0, unwatchedAired.length - 1),
+    };
+  }
+
+  if (nextFuture) {
+    return {
+      status: 'upToDate',
+      nextSeasonNum: nextFuture.season,
+      nextEpisodeNum: nextFuture.ep,
+      nextEpisodeName: nextFuture.name,
+      nextEpisodeAirDate: nextFuture.airDate,
+      nextEpisodeStillPath: nextFuture.stillPath ?? '',
+      totalEpisodes: episodes.length,
+      unwatchedAiredCount: 0,
+      remainingAiredCount: 0,
+    };
+  }
+
+  return {
+    status: ended ? 'finished' : 'upToDate',
+    totalEpisodes: episodes.length,
+    unwatchedAiredCount: 0,
+    remainingAiredCount: 0,
+  };
+}
+
+export function progressUpdates(result: ProgressResult): Record<string, unknown> {
+  const updates: Record<string, unknown> = { status: result.status };
+  if (result.totalEpisodes != null) updates.totalEpisodes = result.totalEpisodes;
+  if (result.nextSeasonNum != null) updates.nextSeasonNum = result.nextSeasonNum;
+  if (result.nextEpisodeNum != null) updates.nextEpisodeNum = result.nextEpisodeNum;
+  if (result.nextEpisodeName != null) updates.nextEpisodeName = result.nextEpisodeName;
+  if (result.nextEpisodeAirDate != null) updates.nextEpisodeAirDate = result.nextEpisodeAirDate;
+  if (result.nextEpisodeStillPath != null) updates.nextEpisodeStillPath = result.nextEpisodeStillPath;
+  if (result.originalLanguage != null) updates.tmdbOriginalLanguage = result.originalLanguage;
+  if (result.unwatchedAiredCount != null) updates.unwatchedAiredCount = result.unwatchedAiredCount;
+  if (result.remainingAiredCount != null) updates.remainingAiredCount = result.remainingAiredCount;
+  return updates;
+}
+
+/** Extra episodes after the one currently shown (aired + unwatched only). */
+export function remainingAfterCurrent(unwatchedAiredCount: number): number {
+  return Math.max(0, unwatchedAiredCount - 1);
+}
+
+/**
+ * Walk TMDB seasons from `startSeason` to find the next unwatched episode
+ * and count remaining aired unwatched episodes for the +N badge.
+ */
+export async function findProgressFromTmdb(
+  tmdbShowId: number,
+  watched: Set<string>,
+  startSeason = 1
+): Promise<ProgressResult> {
+  const details = await tmdb.getShow(tmdbShowId);
+  const lang = details.original_language || undefined;
+  const totalSeasons = details.number_of_seasons ?? 0;
+  const from = Math.max(1, startSeason);
+  const totalEpisodes = details.number_of_episodes;
+  const seasonMeta = details.seasons ?? [];
+
+  type NextEp = {
+    season_number: number;
+    episode_number: number;
+    name: string;
+    air_date: string;
+    still_path: string | null;
+  };
+  const airedUnwatched: NextEp[] = [];
+  let nextFuture: NextEp | null = null;
+
+  for (let s = from; s <= totalSeasons; s++) {
+    const meta = seasonMeta.find(m => m.season_number === s);
+    if (meta && meta.episode_count === 0 && !isFutureAirDate(meta.air_date)) {
+      continue;
+    }
+
+    const season = await tmdb.getSeason(tmdbShowId, s, lang);
+    const eps = (season.episodes ?? []).filter(e => e.season_number > 0);
+
+    for (const e of eps) {
+      if (watched.has(`${e.season_number}x${e.episode_number}`)) continue;
+
+      const airDate = e.air_date ?? '';
+      if (hasAired(airDate)) {
+        airedUnwatched.push({
+          season_number: e.season_number,
+          episode_number: e.episode_number,
+          name: e.name,
+          air_date: airDate,
+          still_path: e.still_path ?? null,
+        });
+        continue;
+      }
+
+      if (isFutureAirDate(airDate) && !nextFuture) {
+        nextFuture = {
+          season_number: e.season_number,
+          episode_number: e.episode_number,
+          name: e.name,
+          air_date: airDate,
+          still_path: e.still_path ?? null,
+        };
+      }
+    }
+
+    const seasonAir =
+      season.air_date ??
+      seasonMeta.find(m => m.season_number === s)?.air_date ??
+      '';
+    const seasonTouched = eps.some(e =>
+      watched.has(`${e.season_number}x${e.episode_number}`) || hasAired(e.air_date)
+    );
+    if (airedUnwatched.length === 0 && !nextFuture && !seasonTouched && isFutureAirDate(seasonAir)) {
+      nextFuture = {
+        season_number: s,
+        episode_number: 1,
+        name: '',
+        air_date: seasonAir,
+        still_path: null,
+      };
+    }
+  }
+
+  const nextAired = airedUnwatched[0];
+  if (nextAired) {
+    return {
+      status: 'watching',
+      nextSeasonNum: nextAired.season_number,
+      nextEpisodeNum: nextAired.episode_number,
+      nextEpisodeName: nextAired.name,
+      nextEpisodeAirDate: nextAired.air_date,
+      nextEpisodeStillPath: nextAired.still_path ?? '',
+      originalLanguage: lang ?? '',
+      totalEpisodes,
+      unwatchedAiredCount: airedUnwatched.length,
+      remainingAiredCount: Math.max(0, airedUnwatched.length - 1),
+    };
+  }
+
+  if (nextFuture) {
+    return {
+      status: 'upToDate',
+      nextSeasonNum: nextFuture.season_number,
+      nextEpisodeNum: nextFuture.episode_number,
+      nextEpisodeName: nextFuture.name,
+      nextEpisodeAirDate: nextFuture.air_date,
+      nextEpisodeStillPath: nextFuture.still_path ?? '',
+      originalLanguage: lang ?? '',
+      totalEpisodes,
+      unwatchedAiredCount: 0,
+      remainingAiredCount: 0,
+    };
+  }
+
+  return {
+    status: isShowEnded(details.status) ? 'finished' : 'upToDate',
+    originalLanguage: lang ?? '',
+    totalEpisodes,
+    unwatchedAiredCount: 0,
+    remainingAiredCount: 0,
+  };
+}

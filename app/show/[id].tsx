@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,12 +7,18 @@ import {
   Image,
   TouchableOpacity,
   ActivityIndicator,
-  SafeAreaView,
+  Modal,
+  Pressable,
 } from 'react-native';
-import { useLocalSearchParams, Stack, useRouter } from 'expo-router';
+import { useLocalSearchParams, Stack } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { id as instantId } from '@instantdb/react-native';
-import { tmdb, posterUrl, TmdbShow, TmdbSeason } from '@/lib/tmdb';
+import { tmdb, posterUrl, stillUrl, TmdbShow, TmdbSeasonSummary, TmdbEpisode, TmdbWatchProvider, providerLogoUrl } from '@/lib/tmdb';
 import db from '@/lib/db';
+import { progressUpdates, hasAired, isFutureAirDate, findProgressFromTmdb } from '@/lib/progress';
+import { theme } from '@/constants/theme';
+import EpisodeCheck from '@/components/EpisodeCheck';
+import { uniqueByTmdbShowId, createUserShowTx } from '@/lib/userShows';
 
 type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
 
@@ -26,15 +32,26 @@ const STATUS_OPTIONS: { key: ShowStatus; label: string }[] = [
 export default function ShowDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const showId = Number(id);
-  const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   const [show, setShow] = useState<TmdbShow | null>(null);
-  const [seasons, setSeasons] = useState<TmdbSeason[]>([]);
+  const [seasonMeta, setSeasonMeta] = useState<TmdbSeasonSummary[]>([]);
+  const [episodesBySeason, setEpisodesBySeason] = useState<Record<number, TmdbEpisode[]>>({});
+  const [loadingSeason, setLoadingSeason] = useState<number | null>(null);
+  const [providers, setProviders] = useState<TmdbWatchProvider[]>([]);
   const [loadingShow, setLoadingShow] = useState(true);
-  const [expandedSeason, setExpandedSeason] = useState<number | null>(1);
+  const [expandedSeason, setExpandedSeason] = useState<number | null>(null);
+  const autoOpenedForShow = useRef<number | null>(null);
+  const [confirm, setConfirm] = useState<{
+    title: string;
+    message: string;
+    yesLabel: string;
+    noLabel: string;
+    resolve: (result: boolean | 'cancel') => void;
+  } | null>(null);
 
   const { user } = db.useAuth();
-  const { data: dbData } = db.useQuery(
+  const { isLoading: dbLoading, data: dbData } = db.useQuery(
     user
       ? {
           userShows: {
@@ -47,30 +64,98 @@ export default function ShowDetailScreen() {
       : null
   );
 
-  const userShow = (dbData?.userShows ?? [])[0] ?? null;
+  const userShow = uniqueByTmdbShowId(dbData?.userShows ?? [])[0] ?? null;
   const watchedEps = dbData?.watchedEpisodes ?? [];
   const watchedSet = new Set(
     watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
   );
 
+  function askConfirm(
+    title: string,
+    message: string,
+    yesLabel = 'Yes',
+    noLabel = 'No'
+  ): Promise<boolean | 'cancel'> {
+    return new Promise(resolve => {
+      setConfirm({ title, message, yesLabel, noLabel, resolve });
+    });
+  }
+
+  function closeConfirm(result: boolean | 'cancel') {
+    const resolve = confirm?.resolve;
+    setConfirm(null);
+    queueMicrotask(() => resolve?.(result));
+  }
+
+  function seasonLooksAvailable(s: TmdbSeasonSummary): boolean {
+    if (s.season_number <= 0) return false;
+    const eps = episodesBySeason[s.season_number];
+    if (eps) return eps.some(ep => hasAired(ep.air_date));
+    if (hasAired(s.air_date)) return true;
+    if (s.episode_count > 0 && s.air_date && !isFutureAirDate(s.air_date)) return true;
+    return false;
+  }
+
+  function lastSeasonNumber(): number | null {
+    const seasons = seasonMeta.filter(
+      s =>
+        s.season_number > 0 &&
+        (seasonLooksAvailable(s) || (s.episode_count ?? 0) > 0)
+    );
+    if (seasons.length === 0) return null;
+    return Math.max(...seasons.map(s => s.season_number));
+  }
+
+  function previousSeasonsIncomplete(lastSeason: number): boolean {
+    return seasonMeta.some(s => {
+      if (s.season_number <= 0 || s.season_number >= lastSeason) return false;
+      if (!seasonLooksAvailable(s) && (s.episode_count ?? 0) === 0) return false;
+      const eps = episodesBySeason[s.season_number];
+      const expected = eps
+        ? eps.filter(ep => hasAired(ep.air_date)).length
+        : s.episode_count ?? 0;
+      if (expected === 0) return false;
+      const watched = watchedEps.filter(e => e.seasonNumber === s.season_number).length;
+      return watched < expected;
+    });
+  }
+
   useEffect(() => {
     let active = true;
     async function load() {
       setLoadingShow(true);
+      setShow(null);
+      setSeasonMeta([]);
+      setEpisodesBySeason({});
       try {
         const showData = await tmdb.getShow(showId);
         if (!active) return;
         setShow(showData);
-        const totalSeasons = showData.number_of_seasons ?? 0;
-        if (totalSeasons > 0) {
-          const seasonData = await tmdb.getSeasons(
-            showId,
-            Math.min(totalSeasons, 10)
-          );
-          if (active) {
-            setSeasons(seasonData.filter(s => s.season_number > 0));
-          }
+        const metas = (showData.seasons ?? [])
+          .filter(s => s.season_number > 0)
+          .sort((a, b) => a.season_number - b.season_number);
+        setSeasonMeta(
+          metas.length > 0
+            ? metas
+            : Array.from({ length: showData.number_of_seasons ?? 0 }, (_, i) => ({
+                id: i + 1,
+                season_number: i + 1,
+                episode_count: 0,
+                name: `Season ${i + 1}`,
+              }))
+        );
+        setEpisodesBySeason({});
+        const providerData = await tmdb.getWatchProviders(showId).catch(() => null);
+        if (!active) return;
+        const nl = providerData?.results?.NL?.flatrate ?? [];
+        const be = providerData?.results?.BE?.flatrate ?? [];
+        const byId = new Map<number, TmdbWatchProvider>();
+        for (const p of [...nl, ...be]) {
+          if (!byId.has(p.provider_id)) byId.set(p.provider_id, p);
         }
+        setProviders(
+          [...byId.values()].sort((a, b) => a.display_priority - b.display_priority)
+        );
       } catch (e) {
         console.warn('Failed to load show', e);
       } finally {
@@ -81,20 +166,55 @@ export default function ShowDetailScreen() {
     return () => { active = false; };
   }, [showId]);
 
-  // Auto-correct next episode in DB whenever both seasons and watchedEps are known.
-  // This repairs any stale values (e.g. from the previous timing bug).
-  useEffect(() => {
-    if (!userShow || seasons.length === 0) return;
-    syncNextEpisode(userShow.id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seasons, watchedEps.length]);
+  async function ensureSeason(seasonNum: number): Promise<TmdbEpisode[]> {
+    if (episodesBySeason[seasonNum]) return episodesBySeason[seasonNum];
+    setLoadingSeason(seasonNum);
+    try {
+      const data = await tmdb.getSeason(showId, seasonNum, show?.original_language);
+      const eps = (data.episodes ?? []).filter(e => e.season_number > 0);
+      setEpisodesBySeason(prev => ({ ...prev, [seasonNum]: eps }));
+      return eps;
+    } catch (e) {
+      console.warn('Failed to load season', seasonNum, e);
+      return [];
+    } finally {
+      setLoadingSeason(null);
+    }
+  }
 
-  async function toggleEpisode(seasonNum: number, episodeNum: number) {
+  function onToggleSeason(seasonNum: number) {
+    if (expandedSeason === seasonNum) {
+      setExpandedSeason(null);
+      return;
+    }
+    setExpandedSeason(seasonNum);
+    ensureSeason(seasonNum);
+  }
+
+  useEffect(() => {
+    autoOpenedForShow.current = null;
+  }, [showId]);
+
+  useEffect(() => {
+    if (!show || show.id !== showId || seasonMeta.length === 0 || dbLoading) return;
+    if (autoOpenedForShow.current === showId) return;
+    const preferred = (userShow?.nextSeasonNum as number | undefined) ?? seasonMeta[0].season_number;
+    const n = seasonMeta.some(s => s.season_number === preferred)
+      ? preferred
+      : seasonMeta[0].season_number;
+    autoOpenedForShow.current = showId;
+    setExpandedSeason(n);
+    ensureSeason(n);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [show, showId, seasonMeta, dbLoading, userShow?.nextSeasonNum]);
+
+  async function toggleEpisode(seasonNum: number, episodeNum: number, airDate?: string) {
     if (!user) return;
     const existing = watchedEps.find(
       e => e.seasonNumber === seasonNum && e.episodeNumber === episodeNum
     );
     const isMarking = !existing;
+    if (isMarking && !hasAired(airDate)) return;
 
     if (existing) {
       await db.transact([db.tx.watchedEpisodes[existing.id].delete()]);
@@ -110,82 +230,155 @@ export default function ShowDetailScreen() {
     }
 
     if (userShow) {
-      // Pass the toggled episode so syncNextEpisode doesn't need to wait for
-      // the reactive query to refresh before computing the correct next episode.
       syncNextEpisode(userShow.id, {
-        season: seasonNum,
-        ep: episodeNum,
-        justMarked: isMarking,
+        add: isMarking ? [{ season: seasonNum, ep: episodeNum }] : undefined,
+        remove: isMarking ? undefined : [{ season: seasonNum, ep: episodeNum }],
+        startSeason: seasonNum,
+        bumpTouch: isMarking,
       });
     }
   }
 
   function syncNextEpisode(
     userShowId: string,
-    toggle?: { season: number; ep: number; justMarked: boolean }
+    patch?: {
+      add?: { season: number; ep: number }[];
+      remove?: { season: number; ep: number }[];
+      startSeason?: number;
+      bumpTouch?: boolean;
+    }
   ) {
-    if (!seasons.length) return;
-    const allEps = seasons.flatMap(s =>
-      (s.episodes ?? []).map(e => ({
-        season: s.season_number,
-        ep: e.episode_number,
-        name: e.name,
-      }))
+    const watched = new Set(watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`));
+    for (const item of patch?.add ?? []) watched.add(`${item.season}x${item.ep}`);
+    for (const item of patch?.remove ?? []) watched.delete(`${item.season}x${item.ep}`);
+
+    const startSeason = Math.max(
+      1,
+      patch?.startSeason ?? (userShow?.nextSeasonNum as number | undefined) ?? 1
     );
 
-    // Build an accurate watched set that already reflects the just-toggled episode
-    const watched = new Set(watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`));
-    if (toggle) {
-      const key = `${toggle.season}x${toggle.ep}`;
-      if (toggle.justMarked) {
-        watched.add(key);
-      } else {
-        watched.delete(key);
-      }
-    }
-
-    const nextEp = allEps.find(e => !watched.has(`${e.season}x${e.ep}`));
-    const updates: Record<string, unknown> = { totalEpisodes: allEps.length };
-
-    if (nextEp) {
-      updates.nextSeasonNum = nextEp.season;
-      updates.nextEpisodeNum = nextEp.ep;
-      updates.nextEpisodeName = nextEp.name;
-      updates.status = 'watching';
-    } else {
-      updates.status = 'upToDate';
-    }
-
-    db.transact([db.tx.userShows[userShowId].update(updates)]);
+    findProgressFromTmdb(showId, watched, startSeason)
+      .then(progress => {
+        if (!patch && userShow?.status === 'watchLater') return;
+        const updates: Record<string, unknown> = progressUpdates(progress);
+        if (patch?.bumpTouch) {
+          updates.lastTouchedAt = new Date().toISOString();
+        }
+        return db.transact([db.tx.userShows[userShowId].update(updates)]);
+      })
+      .catch(e => console.warn('Failed to sync next episode', e));
   }
 
-  async function markSeasonWatched(season: TmdbSeason) {
-    if (!user || !season.episodes) return;
-    const toMark = season.episodes.filter(
-      ep => !watchedSet.has(`${season.season_number}x${ep.episode_number}`)
-    );
-    if (toMark.length === 0) {
-      const toUnmark = watchedEps.filter(
-        e => e.seasonNumber === season.season_number
-      );
-      await db.transact(toUnmark.map(e => db.tx.watchedEpisodes[e.id].delete()));
-    } else {
+  async function writeWatched(episodes: { season: number; ep: number }[]) {
+    if (!user || episodes.length === 0) return;
+    const now = new Date().toISOString();
+    const CHUNK = 40;
+    for (let i = 0; i < episodes.length; i += CHUNK) {
+      const chunk = episodes.slice(i, i + CHUNK);
       await db.transact(
-        toMark.map(ep =>
+        chunk.map(item =>
           db.tx.watchedEpisodes[instantId()].update({
             tmdbShowId: showId,
-            seasonNumber: season.season_number,
-            episodeNumber: ep.episode_number,
-            watchedAt: new Date().toISOString(),
+            seasonNumber: item.season,
+            episodeNumber: item.ep,
+            watchedAt: now,
           }).link({ $user: user.id })
         )
       );
     }
+  }
 
-    // After marking/unmarking a full season, let the reactive query settle
-    // (all episodes changed at once) then recompute
+  async function collectAiredUnwatched(seasonNumber: number): Promise<{ season: number; ep: number }[]> {
+    const eps = await ensureSeason(seasonNumber);
+    return eps
+      .filter(
+        ep =>
+          hasAired(ep.air_date) &&
+          !watchedSet.has(`${seasonNumber}x${ep.episode_number}`)
+      )
+      .map(ep => ({ season: seasonNumber, ep: ep.episode_number }));
+  }
+
+  async function unmarkSeason(seasonNumber: number) {
+    if (!user) return;
+    const toUnmark = watchedEps.filter(e => e.seasonNumber === seasonNumber);
+    if (toUnmark.length === 0) return;
+    await db.transact(toUnmark.map(e => db.tx.watchedEpisodes[e.id].delete()));
     if (userShow) {
-      setTimeout(() => syncNextEpisode(userShow!.id), 200);
+      syncNextEpisode(userShow.id, {
+        remove: toUnmark.map(e => ({
+          season: e.seasonNumber as number,
+          ep: e.episodeNumber as number,
+        })),
+        startSeason: 1,
+      });
+    }
+  }
+
+  async function markSeasonWatched(seasonNumber: number) {
+    if (!user) return;
+    const lastSeason = lastSeasonNumber();
+    const isLast = lastSeason != null && seasonNumber === lastSeason;
+    const skipEarlier = isLast && previousSeasonsIncomplete(seasonNumber);
+
+    let forceFinished = false;
+    let includeEarlier = false;
+
+    if (skipEarlier) {
+      const markEarlier = await askConfirm(
+        'Mark earlier seasons?',
+        'You marked the last season, but earlier seasons are not fully watched. Mark those as watched too?',
+        'Yes',
+        'No'
+      );
+      if (markEarlier === 'cancel') return;
+      if (markEarlier) {
+        includeEarlier = true;
+      } else {
+        const markFinished = await askConfirm(
+          'Mark as finished?',
+          'Leave earlier seasons unwatched, but set this show as Finished?',
+          'Yes',
+          'No'
+        );
+        if (markFinished === 'cancel') return;
+        forceFinished = markFinished === true;
+      }
+    }
+
+    const toAdd: { season: number; ep: number }[] = [];
+    if (includeEarlier) {
+      for (const s of seasonMeta) {
+        if (s.season_number <= 0 || s.season_number > seasonNumber) continue;
+        toAdd.push(...(await collectAiredUnwatched(s.season_number)));
+      }
+    } else {
+      toAdd.push(...(await collectAiredUnwatched(seasonNumber)));
+    }
+
+    if (toAdd.length === 0 && !forceFinished) return;
+    await writeWatched(toAdd);
+
+    if (forceFinished) {
+      if (userShow) {
+        await db.transact([
+          db.tx.userShows[userShow.id].update({
+            status: 'finished',
+            lastTouchedAt: new Date().toISOString(),
+          }),
+        ]);
+      } else {
+        await setStatus('finished');
+      }
+      return;
+    }
+
+    if (userShow) {
+      syncNextEpisode(userShow.id, {
+        add: toAdd,
+        startSeason: 1,
+        bumpTouch: true,
+      });
     }
   }
 
@@ -194,15 +387,16 @@ export default function ShowDetailScreen() {
     if (userShow) {
       await db.transact([db.tx.userShows[userShow.id].update({ status })]);
     } else if (show) {
-      await db.transact([
-        db.tx.userShows[instantId()].update({
-          tmdbShowId: show.id,
-          tmdbShowName: show.name,
-          tmdbPosterPath: show.poster_path ?? '',
-          status,
-          addedAt: new Date().toISOString(),
-        }).link({ $user: user.id }),
-      ]);
+      const { tx } = createUserShowTx(user.id, {
+        tmdbShowId: show.id,
+        tmdbShowName: show.name,
+        tmdbPosterPath: show.poster_path ?? '',
+        status,
+        addedAt: new Date().toISOString(),
+        lastTouchedAt: new Date().toISOString(),
+        tmdbOriginalLanguage: show.original_language ?? '',
+      });
+      await db.transact([tx]);
     }
   }
 
@@ -216,9 +410,9 @@ export default function ShowDetailScreen() {
   if (loadingShow) {
     return (
       <>
-        <Stack.Screen options={{ title: '', headerStyle: { backgroundColor: '#0d0f14' }, headerTintColor: '#fff' }} />
+        <Stack.Screen options={{ title: '', headerStyle: { backgroundColor: theme.bg }, headerTintColor: theme.text }} />
         <View style={styles.center}>
-          <ActivityIndicator color="#e94560" size="large" />
+          <ActivityIndicator color={theme.accent} size="large" />
         </View>
       </>
     );
@@ -227,7 +421,7 @@ export default function ShowDetailScreen() {
   if (!show) {
     return (
       <>
-        <Stack.Screen options={{ title: 'Error', headerStyle: { backgroundColor: '#0d0f14' }, headerTintColor: '#fff' }} />
+        <Stack.Screen options={{ title: 'Error', headerStyle: { backgroundColor: theme.bg }, headerTintColor: theme.text }} />
         <View style={styles.center}>
           <Text style={styles.errorText}>Show not found</Text>
         </View>
@@ -240,12 +434,16 @@ export default function ShowDetailScreen() {
       <Stack.Screen
         options={{
           title: show.name,
-          headerStyle: { backgroundColor: '#0d0f14' },
-          headerTintColor: '#fff',
+          headerStyle: { backgroundColor: theme.bg },
+          headerTintColor: theme.text,
           headerShadowVisible: false,
         }}
       />
-      <ScrollView style={styles.container} contentContainerStyle={styles.content}>
+      <ScrollView
+        style={styles.container}
+        contentContainerStyle={[styles.content, { paddingBottom: 48 + insets.bottom }]}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.hero}>
           {poster ? (
             <Image source={{ uri: poster }} style={styles.poster} />
@@ -255,6 +453,7 @@ export default function ShowDetailScreen() {
             </View>
           )}
           <View style={styles.heroInfo}>
+            <Text style={styles.kindPill}>Series</Text>
             <Text style={styles.showTitle} numberOfLines={3}>
               {show.name}
             </Text>
@@ -291,6 +490,37 @@ export default function ShowDetailScreen() {
           <Text style={styles.overview}>{show.overview}</Text>
         ) : null}
 
+        {providers.length > 0 && (
+          <View style={styles.providersSection}>
+            <Text style={styles.sectionLabel}>Where to watch</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.providersRow}
+            >
+              {providers.map(p => {
+                const logo = providerLogoUrl(p.logo_path);
+                return (
+                  <View key={p.provider_id} style={styles.providerItem}>
+                    {logo ? (
+                      <Image source={{ uri: logo }} style={styles.providerLogo} />
+                    ) : (
+                      <View style={[styles.providerLogo, styles.providerLogoFallback]}>
+                        <Text style={styles.providerFallbackText}>
+                          {p.provider_name.slice(0, 1)}
+                        </Text>
+                      </View>
+                    )}
+                    <Text style={styles.providerName} numberOfLines={1}>
+                      {p.provider_name}
+                    </Text>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </View>
+        )}
+
         <View style={styles.statusSection}>
           <Text style={styles.sectionLabel}>Your Status</Text>
           <View style={styles.statusButtons}>
@@ -299,7 +529,8 @@ export default function ShowDetailScreen() {
                 key={key}
                 style={[
                   styles.statusBtn,
-                  userShow?.status === key && styles.statusBtnActive,
+                  userShow?.status === key &&
+                    (key === 'finished' ? styles.statusBtnDone : styles.statusBtnActive),
                 ]}
                 onPress={() => setStatus(key)}
               >
@@ -321,54 +552,136 @@ export default function ShowDetailScreen() {
           ) : null}
         </View>
 
-        {seasons.length > 0 && (
+        {seasonMeta.length > 0 && (
           <View style={styles.seasonsSection}>
             <Text style={styles.sectionLabel}>Episodes</Text>
-            {seasons.map(season => {
-              const eps = season.episodes ?? [];
-              const watchedCount = eps.filter(
-                ep =>
-                  watchedSet.has(`${season.season_number}x${ep.episode_number}`)
+            {seasonMeta.map(season => {
+              const eps = episodesBySeason[season.season_number];
+              const total = eps?.length || season.episode_count || 0;
+              const watchedCount = watchedEps.filter(
+                e => e.seasonNumber === season.season_number
+              ).length;
+              const airedEps = (eps ?? []).filter(ep => hasAired(ep.air_date));
+              const watchedAiredCount = airedEps.filter(ep =>
+                watchedSet.has(`${season.season_number}x${ep.episode_number}`)
               ).length;
               const isExpanded = expandedSeason === season.season_number;
-              const allWatched = eps.length > 0 && watchedCount === eps.length;
+              const isLoadingEps = isExpanded && loadingSeason === season.season_number && !eps;
+              const allAiredWatched =
+                airedEps.length > 0 && watchedAiredCount === airedEps.length;
+
+              const likelyAllWatched = total > 0 && watchedCount >= total;
+              const canMark = eps ? !allAiredWatched : !likelyAllWatched;
+              const canUnmark = watchedCount > 0;
 
               return (
                 <View key={season.season_number} style={styles.seasonBlock}>
-                  <TouchableOpacity
-                    style={styles.seasonHeader}
-                    onPress={() =>
-                      setExpandedSeason(isExpanded ? null : season.season_number)
-                    }
-                    activeOpacity={0.8}
-                  >
-                    <View style={styles.seasonHeaderLeft}>
+                  <View style={styles.seasonHeader}>
+                    <TouchableOpacity
+                      style={styles.seasonHeaderLeft}
+                      onPress={() => onToggleSeason(season.season_number)}
+                      activeOpacity={0.8}
+                    >
                       <Text style={styles.seasonTitle}>{season.name}</Text>
-                      <Text style={styles.seasonProgress}>
-                        {watchedCount}/{eps.length}
-                      </Text>
-                    </View>
-                    <View style={styles.seasonHeaderRight}>
-                      <TouchableOpacity
+                      <Text
                         style={[
-                          styles.markAllBtn,
-                          allWatched && styles.markAllBtnActive,
+                          styles.seasonProgress,
+                          total > 0 && watchedCount >= total && styles.seasonProgressDone,
                         ]}
-                        onPress={() => markSeasonWatched(season)}
                       >
-                        <Text style={styles.markAllText}>
-                          {allWatched ? 'Unmark all' : 'Mark all'}
-                        </Text>
+                        {watchedCount}/{total || '—'}
+                      </Text>
+                    </TouchableOpacity>
+                    <View style={styles.seasonHeaderRight}>
+                      {canUnmark ? (
+                        <TouchableOpacity
+                          style={[styles.markAllBtn, styles.unmarkAllBtn]}
+                          onPress={() => unmarkSeason(season.season_number)}
+                        >
+                          <Text style={styles.markAllText}>Unmark all</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                      {canMark && total > 0 ? (
+                        <TouchableOpacity
+                          style={styles.markAllBtn}
+                          onPress={() => markSeasonWatched(season.season_number)}
+                        >
+                          <Text style={styles.markAllText}>Mark all</Text>
+                        </TouchableOpacity>
+                      ) : null}
+                      <TouchableOpacity
+                        onPress={() => onToggleSeason(season.season_number)}
+                        hitSlop={8}
+                      >
+                        <Text style={styles.chevron}>{isExpanded ? '▲' : '▼'}</Text>
                       </TouchableOpacity>
-                      <Text style={styles.chevron}>{isExpanded ? '▲' : '▼'}</Text>
                     </View>
-                  </TouchableOpacity>
+                  </View>
+
+                  {isExpanded && isLoadingEps ? (
+                    <View style={styles.seasonLoader}>
+                      <ActivityIndicator color={theme.accent} />
+                    </View>
+                  ) : null}
 
                   {isExpanded &&
-                    eps.map(ep => {
+                    (eps ?? []).map(ep => {
                       const watched = watchedSet.has(
                         `${season.season_number}x${ep.episode_number}`
                       );
+                      const aired = hasAired(ep.air_date);
+                      const still = stillUrl(ep.still_path, 'w185');
+                      const row = (
+                        <>
+                          <View style={styles.epStillWrap}>
+                            {still ? (
+                              <Image
+                                source={{ uri: still }}
+                                style={[styles.epStill, watched && styles.epStillWatched]}
+                              />
+                            ) : (
+                              <View style={[styles.epStill, styles.epStillPlaceholder]} />
+                            )}
+                            <View style={styles.epStillCheck}>
+                              {aired || watched ? (
+                                <EpisodeCheck watched={watched} size={22} />
+                              ) : (
+                                <View style={styles.upcomingDot} />
+                              )}
+                            </View>
+                          </View>
+                          <View style={styles.epInfo}>
+                            <Text
+                              style={[
+                                styles.epTitle,
+                                watched && styles.epTitleWatched,
+                                !aired && !watched && styles.epTitleUpcoming,
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {ep.episode_number}. {ep.name}
+                            </Text>
+                            <Text style={styles.epDate}>
+                              {!aired
+                                ? 'Not out yet'
+                                : ep.air_date
+                                  ? ep.air_date
+                                  : ''}
+                            </Text>
+                          </View>
+                        </>
+                      );
+                      if (!aired && !watched) {
+                        return (
+                          <View
+                            key={ep.id}
+                            style={[styles.episodeRow, styles.episodeRowUpcoming]}
+                            accessibilityLabel="This episode isn't out yet"
+                          >
+                            {row}
+                          </View>
+                        );
+                      }
                       return (
                         <TouchableOpacity
                           key={ep.id}
@@ -379,35 +692,13 @@ export default function ShowDetailScreen() {
                           onPress={() =>
                             toggleEpisode(
                               season.season_number,
-                              ep.episode_number
+                              ep.episode_number,
+                              ep.air_date
                             )
                           }
                           activeOpacity={0.7}
                         >
-                          <View
-                            style={[
-                              styles.checkBox,
-                              watched && styles.checkBoxDone,
-                            ]}
-                          >
-                            {watched ? (
-                              <Text style={styles.checkMark}>✓</Text>
-                            ) : null}
-                          </View>
-                          <View style={styles.epInfo}>
-                            <Text
-                              style={[
-                                styles.epTitle,
-                                watched && styles.epTitleWatched,
-                              ]}
-                              numberOfLines={1}
-                            >
-                              {ep.episode_number}. {ep.name}
-                            </Text>
-                            {ep.air_date ? (
-                              <Text style={styles.epDate}>{ep.air_date}</Text>
-                            ) : null}
-                          </View>
+                          {row}
                         </TouchableOpacity>
                       );
                     })}
@@ -417,6 +708,37 @@ export default function ShowDetailScreen() {
           </View>
         )}
       </ScrollView>
+      <Modal
+        visible={confirm != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => closeConfirm('cancel')}
+      >
+        <View style={styles.confirmOverlay}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            onPress={() => closeConfirm('cancel')}
+          />
+          <View style={styles.confirmBox}>
+            <Text style={styles.confirmTitle}>{confirm?.title}</Text>
+            <Text style={styles.confirmMessage}>{confirm?.message}</Text>
+            <View style={styles.confirmActions}>
+              <TouchableOpacity
+                style={styles.confirmNo}
+                onPress={() => closeConfirm(false)}
+              >
+                <Text style={styles.confirmNoText}>{confirm?.noLabel ?? 'No'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.confirmYes}
+                onPress={() => closeConfirm(true)}
+              >
+                <Text style={styles.confirmYesText}>{confirm?.yesLabel ?? 'Yes'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </>
   );
 }
@@ -424,7 +746,7 @@ export default function ShowDetailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0d0f14',
+    backgroundColor: theme.bg,
   },
   content: {
     paddingBottom: 48,
@@ -433,10 +755,10 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#0d0f14',
+    backgroundColor: theme.bg,
   },
   errorText: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 16,
   },
   hero: {
@@ -448,7 +770,7 @@ const styles = StyleSheet.create({
     width: 110,
     height: 165,
     borderRadius: 10,
-    backgroundColor: '#252840',
+    backgroundColor: theme.elevated,
   },
   posterPlaceholder: {
     justifyContent: 'center',
@@ -462,34 +784,42 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   showTitle: {
-    color: '#fff',
+    color: theme.text,
     fontSize: 20,
     fontWeight: '700',
     lineHeight: 26,
+  },
+  kindPill: {
+    alignSelf: 'flex-start',
+    color: theme.sky,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
   },
   metaRow: {
     flexDirection: 'row',
     gap: 10,
   },
   metaText: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 13,
   },
   rating: {
-    color: '#f5a623',
+    color: theme.gold,
     fontSize: 14,
     fontWeight: '600',
   },
   showStatusPill: {
     alignSelf: 'flex-start',
-    backgroundColor: '#4caf50',
+    backgroundColor: theme.sky,
     borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 3,
     marginTop: 2,
   },
   showStatusEnded: {
-    backgroundColor: '#555',
+    backgroundColor: theme.faint,
   },
   showStatusText: {
     color: '#fff',
@@ -497,18 +827,52 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   overview: {
-    color: '#c0c8d8',
+    color: theme.muted,
     fontSize: 14,
     lineHeight: 21,
     paddingHorizontal: 16,
     marginBottom: 20,
+  },
+  providersSection: {
+    paddingHorizontal: 16,
+    marginBottom: 24,
+  },
+  providersRow: {
+    gap: 12,
+    paddingRight: 8,
+  },
+  providerItem: {
+    width: 72,
+    alignItems: 'center',
+    gap: 6,
+  },
+  providerLogo: {
+    width: 48,
+    height: 48,
+    borderRadius: 10,
+    backgroundColor: theme.elevated,
+  },
+  providerLogoFallback: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  providerFallbackText: {
+    color: theme.text,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  providerName: {
+    color: theme.muted,
+    fontSize: 11,
+    textAlign: 'center',
+    width: '100%',
   },
   statusSection: {
     paddingHorizontal: 16,
     marginBottom: 24,
   },
   sectionLabel: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 11,
     fontWeight: '700',
     textTransform: 'uppercase',
@@ -526,15 +890,19 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#252840',
-    backgroundColor: '#1c1f2e',
+    borderColor: theme.border,
+    backgroundColor: theme.elevated,
   },
   statusBtnActive: {
-    backgroundColor: '#e94560',
-    borderColor: '#e94560',
+    backgroundColor: theme.accent,
+    borderColor: theme.accent,
+  },
+  statusBtnDone: {
+    backgroundColor: theme.check,
+    borderColor: theme.check,
   },
   statusBtnText: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 13,
     fontWeight: '500',
   },
@@ -547,10 +915,10 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#333',
+    borderColor: theme.border,
   },
   removeBtnText: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 13,
   },
   seasonsSection: {
@@ -560,8 +928,12 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#1c1f2e',
+    borderColor: theme.border,
     marginBottom: 8,
+  },
+  seasonLoader: {
+    paddingVertical: 20,
+    alignItems: 'center',
   },
   seasonHeader: {
     flexDirection: 'row',
@@ -569,89 +941,172 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 14,
     paddingVertical: 12,
-    backgroundColor: '#131520',
+    backgroundColor: theme.surface,
   },
   seasonHeaderLeft: {
     flex: 1,
     gap: 2,
   },
   seasonTitle: {
-    color: '#fff',
+    color: theme.text,
     fontSize: 15,
     fontWeight: '600',
   },
   seasonProgress: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 12,
+  },
+  seasonProgressDone: {
+    color: theme.check,
+    fontWeight: '700',
   },
   seasonHeaderRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 8,
+    maxWidth: '62%',
   },
   markAllBtn: {
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 6,
-    backgroundColor: '#252840',
+    backgroundColor: theme.elevated,
   },
-  markAllBtnActive: {
-    backgroundColor: '#1c1f2e',
+  unmarkAllBtn: {
+    backgroundColor: theme.bg,
   },
   markAllText: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 11,
     fontWeight: '600',
   },
+  confirmOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+    position: 'relative',
+  },
+  confirmBox: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: theme.elevated,
+    borderRadius: 14,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: theme.border,
+    gap: 10,
+    zIndex: 1,
+  },
+  confirmTitle: {
+    color: theme.text,
+    fontSize: 17,
+    fontWeight: '700',
+  },
+  confirmMessage: {
+    color: theme.muted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  confirmActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 8,
+  },
+  confirmNo: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  confirmNoText: {
+    color: theme.muted,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  confirmYes: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+    backgroundColor: theme.accent,
+  },
+  confirmYesText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
   chevron: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 12,
   },
   episodeRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
-    paddingVertical: 12,
+    paddingVertical: 10,
     borderTopWidth: 1,
-    borderTopColor: '#1c1f2e',
+    borderTopColor: theme.border,
     gap: 12,
-    backgroundColor: '#1c1f2e',
+    backgroundColor: theme.elevated,
+  },
+  epStillWrap: {
+    position: 'relative',
+    width: 88,
+    height: 50,
+    borderRadius: 6,
+    overflow: 'hidden',
+    flexShrink: 0,
+    backgroundColor: theme.elevated,
+  },
+  epStill: {
+    width: '100%',
+    height: '100%',
+  },
+  epStillWatched: {
+    opacity: 0.55,
+  },
+  epStillPlaceholder: {
+    backgroundColor: theme.border,
+  },
+  epStillCheck: {
+    position: 'absolute',
+    right: 4,
+    bottom: 4,
   },
   episodeRowWatched: {
-    backgroundColor: '#161825',
+    backgroundColor: theme.bg,
   },
-  checkBox: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+  episodeRowUpcoming: {
+    opacity: 0.55,
+  },
+  upcomingDot: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     borderWidth: 2,
-    borderColor: '#333',
-    justifyContent: 'center',
-    alignItems: 'center',
+    borderColor: theme.border,
     flexShrink: 0,
   },
-  checkBoxDone: {
-    backgroundColor: '#e94560',
-    borderColor: '#e94560',
-  },
-  checkMark: {
-    color: '#fff',
-    fontSize: 11,
-    fontWeight: '700',
+  epTitleUpcoming: {
+    color: theme.faint,
   },
   epInfo: {
     flex: 1,
   },
   epTitle: {
-    color: '#fff',
+    color: theme.text,
     fontSize: 14,
     lineHeight: 19,
   },
   epTitleWatched: {
-    color: '#555',
+    color: theme.faint,
+    textDecorationLine: 'line-through',
   },
   epDate: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 11,
     marginTop: 2,
   },

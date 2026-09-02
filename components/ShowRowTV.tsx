@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,8 +9,12 @@ import {
   Modal,
   Pressable,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
-import { posterUrl } from '@/lib/tmdb';
+import { posterUrl, stillUrl, formatAirsLabel } from '@/lib/tmdb';
+import { theme } from '@/constants/theme';
+import EpisodeCheck from '@/components/EpisodeCheck';
 
 export type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
 
@@ -22,7 +26,10 @@ interface ShowRowTVProps {
   nextSeasonNum?: number | null;
   nextEpisodeNum?: number | null;
   nextEpisodeName?: string | null;
+  nextEpisodeAirDate?: string | null;
+  nextEpisodeStillPath?: string | null;
   remainingCount?: number;
+  canMark?: boolean;
   onShowPress: () => void;
   onCheckPress: () => void;
   onStatusChange: (id: string, status: ShowStatus) => void;
@@ -50,7 +57,7 @@ function RightActions({
   );
 }
 
-function WebMenu({
+function OverflowMenu({
   visible,
   onClose,
   onWatchLater,
@@ -64,23 +71,26 @@ function WebMenu({
   if (!visible) return null;
   return (
     <Modal transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable style={styles.menuOverlay} onPress={onClose}>
-        <View style={styles.menuBox}>
-          <TouchableOpacity
-            style={styles.menuItem}
-            onPress={() => { onWatchLater(); onClose(); }}
-          >
-            <Text style={styles.menuItemText}>⏱  Watch Later</Text>
-          </TouchableOpacity>
-          <View style={styles.menuDivider} />
-          <TouchableOpacity
-            style={styles.menuItem}
-            onPress={() => { onRemove(); onClose(); }}
-          >
-            <Text style={[styles.menuItemText, styles.menuItemDanger]}>✕  Remove</Text>
-          </TouchableOpacity>
-        </View>
-      </Pressable>
+      <View style={styles.menuOverlay}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
+        <SafeAreaView edges={['bottom']} style={styles.menuSafe} pointerEvents="box-none">
+          <View style={styles.menuBox}>
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => { onWatchLater(); onClose(); }}
+            >
+              <Text style={styles.menuItemText}>⏱  Watch Later</Text>
+            </TouchableOpacity>
+            <View style={styles.menuDivider} />
+            <TouchableOpacity
+              style={styles.menuItem}
+              onPress={() => { onRemove(); onClose(); }}
+            >
+              <Text style={[styles.menuItemText, styles.menuItemDanger]}>✕  Remove</Text>
+            </TouchableOpacity>
+          </View>
+        </SafeAreaView>
+      </View>
     </Modal>
   );
 }
@@ -93,7 +103,10 @@ export default function ShowRowTV({
   nextSeasonNum,
   nextEpisodeNum,
   nextEpisodeName,
+  nextEpisodeAirDate,
+  nextEpisodeStillPath,
   remainingCount,
+  canMark = true,
   onShowPress,
   onCheckPress,
   onStatusChange,
@@ -101,12 +114,26 @@ export default function ShowRowTV({
 }: ShowRowTVProps) {
   const swipeRef = useRef<Swipeable>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [marking, setMarking] = useState(false);
   const poster = posterUrl(posterPath, 'w185');
+  const still = stillUrl(nextEpisodeStillPath, 'w185');
+  const thumb = still ?? poster;
 
   const season = nextSeasonNum ?? 1;
   const episode = nextEpisodeNum ?? 1;
   const epCode = `S${String(season).padStart(2, '0')} | E${String(episode).padStart(2, '0')}`;
   const remaining = remainingCount ?? 0;
+  const airsLabel = formatAirsLabel(nextEpisodeAirDate);
+
+  useEffect(() => {
+    setMarking(false);
+  }, [nextSeasonNum, nextEpisodeNum]);
+
+  useEffect(() => {
+    if (!marking) return;
+    const t = setTimeout(() => setMarking(false), 5000);
+    return () => clearTimeout(t);
+  }, [marking]);
 
   function handleWatchLater() {
     swipeRef.current?.close();
@@ -121,22 +148,28 @@ export default function ShowRowTV({
     <View style={styles.row}>
       {/* Poster */}
       <TouchableOpacity onPress={onShowPress} activeOpacity={0.8}>
-        {poster ? (
-          <Image source={{ uri: poster }} style={styles.poster} />
-        ) : (
-          <View style={[styles.poster, styles.posterPlaceholder]}>
-            <Text style={styles.posterEmoji}>📺</Text>
-          </View>
-        )}
+        <View style={still ? styles.stillWrap : styles.posterWrap}>
+          {thumb ? (
+            <Image source={{ uri: thumb }} style={still ? styles.still : styles.poster} />
+          ) : (
+            <View style={[styles.poster, styles.posterPlaceholder]}>
+              <Text style={styles.posterEmoji}>📺</Text>
+            </View>
+          )}
+          {marking ? (
+            <View style={styles.stillFlash} pointerEvents="none">
+              <Text style={styles.stillFlashMark}>✓</Text>
+            </View>
+          ) : null}
+        </View>
       </TouchableOpacity>
 
       {/* Info */}
       <View style={styles.info}>
-        <TouchableOpacity style={styles.showPill} onPress={onShowPress} activeOpacity={0.7}>
-          <Text style={styles.showPillText} numberOfLines={1}>
-            {name.toUpperCase()}
+        <TouchableOpacity onPress={onShowPress} activeOpacity={0.7} style={styles.showTitleBtn}>
+          <Text style={styles.showTitle} numberOfLines={2}>
+            {name}
           </Text>
-          <Text style={styles.showPillArrow}> ›</Text>
         </TouchableOpacity>
 
         <View style={styles.epRow}>
@@ -149,56 +182,78 @@ export default function ShowRowTV({
         {nextEpisodeName ? (
           <Text style={styles.epName} numberOfLines={1}>{nextEpisodeName}</Text>
         ) : null}
+        {airsLabel ? (
+          <Text style={styles.airsLabel}>{airsLabel}</Text>
+        ) : null}
       </View>
 
       {/* Right side actions */}
       <View style={styles.rightSide}>
-        {Platform.OS === 'web' && (
-          <TouchableOpacity
-            style={styles.menuBtn}
-            onPress={() => setMenuOpen(true)}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-          >
-            <Text style={styles.menuBtnText}>⋯</Text>
-          </TouchableOpacity>
-        )}
         <TouchableOpacity
-          style={[styles.checkBtn, status === 'upToDate' && styles.checkBtnDone]}
-          onPress={onCheckPress}
-          activeOpacity={0.75}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          style={styles.iconBtn}
+          onPress={() => setMenuOpen(true)}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="More options"
         >
-          <Text style={styles.checkIcon}>✓</Text>
+          <Ionicons name="ellipsis-horizontal" size={20} color={theme.muted} />
         </TouchableOpacity>
+        {canMark ? (
+          <TouchableOpacity
+            style={styles.iconBtn}
+            onPress={() => {
+              if (marking) return;
+              setMarking(true);
+              onCheckPress();
+            }}
+            activeOpacity={0.75}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={marking ? 'Marked as watched' : 'Mark episode as watched'}
+          >
+            <EpisodeCheck watched={marking} size={28} />
+          </TouchableOpacity>
+        ) : (
+          <View style={styles.iconBtn} accessibilityLabel="This episode isn't out yet">
+            <Ionicons name="time-outline" size={20} color={theme.faint} />
+          </View>
+        )}
       </View>
     </View>
+  );
+
+  const menu = (
+    <OverflowMenu
+      visible={menuOpen}
+      onClose={() => setMenuOpen(false)}
+      onWatchLater={() => onStatusChange(id, 'watchLater')}
+      onRemove={() => onRemove(id)}
+    />
   );
 
   if (Platform.OS === 'web') {
     return (
       <>
         {rowContent}
-        <WebMenu
-          visible={menuOpen}
-          onClose={() => setMenuOpen(false)}
-          onWatchLater={() => onStatusChange(id, 'watchLater')}
-          onRemove={() => onRemove(id)}
-        />
+        {menu}
       </>
     );
   }
 
   return (
-    <Swipeable
-      ref={swipeRef}
-      renderRightActions={() => (
-        <RightActions onWatchLater={handleWatchLater} onRemove={handleRemove} />
-      )}
-      friction={2}
-      rightThreshold={40}
-    >
-      {rowContent}
-    </Swipeable>
+    <>
+      <Swipeable
+        ref={swipeRef}
+        renderRightActions={() => (
+          <RightActions onWatchLater={handleWatchLater} onRemove={handleRemove} />
+        )}
+        friction={2}
+        rightThreshold={40}
+      >
+        {rowContent}
+      </Swipeable>
+      {menu}
+    </>
   );
 }
 
@@ -206,11 +261,11 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#13141f',
+    backgroundColor: theme.surface,
     paddingVertical: 12,
     paddingHorizontal: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e2030',
+    borderBottomColor: theme.border,
     gap: 12,
   },
   poster: {
@@ -218,8 +273,35 @@ const styles = StyleSheet.create({
     height: 76,
     borderRadius: 6,
   },
+  stillWrap: {
+    position: 'relative',
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  posterWrap: {
+    position: 'relative',
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  still: {
+    width: 96,
+    height: 54,
+    borderRadius: 6,
+    backgroundColor: theme.elevated,
+  },
+  stillFlash: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(61, 206, 122, 0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stillFlashMark: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '800',
+  },
   posterPlaceholder: {
-    backgroundColor: '#252840',
+    backgroundColor: theme.elevated,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -228,82 +310,55 @@ const styles = StyleSheet.create({
   },
   info: {
     flex: 1,
-    gap: 5,
+    minWidth: 0,
+    gap: 4,
     justifyContent: 'center',
   },
-  showPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    backgroundColor: '#1e2030',
-    borderRadius: 20,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    maxWidth: '90%',
+  showTitleBtn: {
+    alignSelf: 'stretch',
   },
-  showPillText: {
-    color: '#c0c8d8',
-    fontSize: 11,
+  showTitle: {
+    color: theme.text,
+    fontSize: 15,
     fontWeight: '700',
-    letterSpacing: 0.5,
-    flexShrink: 1,
-  },
-  showPillArrow: {
-    color: '#8892a4',
-    fontSize: 13,
+    lineHeight: 19,
   },
   epRow: {
     flexDirection: 'row',
     alignItems: 'baseline',
   },
   epCode: {
-    color: '#fff',
-    fontSize: 17,
-    fontWeight: '700',
-    letterSpacing: 0.3,
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
   remaining: {
-    color: '#e94560',
+    color: theme.accent,
     fontSize: 14,
     fontWeight: '600',
   },
   epName: {
-    color: '#8892a4',
+    color: theme.muted,
     fontSize: 13,
+  },
+  airsLabel: {
+    color: theme.gold,
+    fontSize: 12,
+    fontWeight: '600',
   },
   rightSide: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 2,
     flexShrink: 0,
   },
-  menuBtn: {
-    width: 28,
-    height: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  menuBtnText: {
-    color: '#8892a4',
-    fontSize: 20,
-    letterSpacing: 1,
-  },
-  checkBtn: {
+  iconBtn: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#4caf50',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  checkBtnDone: {
-    backgroundColor: '#2a2d3e',
-  },
-  checkIcon: {
-    color: '#fff',
-    fontSize: 18,
-    fontWeight: '700',
-    lineHeight: 22,
   },
   rightActions: {
     flexDirection: 'row',
@@ -315,10 +370,10 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   watchLaterBtn: {
-    backgroundColor: '#f5a623',
+    backgroundColor: theme.gold,
   },
   removeBtn: {
-    backgroundColor: '#e94560',
+    backgroundColor: theme.accent,
   },
   actionEmoji: {
     color: '#fff',
@@ -332,31 +387,36 @@ const styles = StyleSheet.create({
   menuOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    justifyContent: Platform.OS === 'web' ? 'center' : 'flex-end',
+    alignItems: Platform.OS === 'web' ? 'center' : 'stretch',
+  },
+  menuSafe: {
+    width: Platform.OS === 'web' ? undefined : '100%',
+    paddingHorizontal: Platform.OS === 'web' ? 0 : 12,
+    paddingBottom: Platform.OS === 'web' ? 0 : 8,
   },
   menuBox: {
-    backgroundColor: '#1e2030',
+    backgroundColor: theme.elevated,
     borderRadius: 14,
     overflow: 'hidden',
-    width: 220,
+    width: Platform.OS === 'web' ? 220 : undefined,
     borderWidth: 1,
-    borderColor: '#252840',
+    borderColor: theme.border,
   },
   menuItem: {
     paddingVertical: 16,
     paddingHorizontal: 20,
   },
   menuItemText: {
-    color: '#fff',
+    color: theme.text,
     fontSize: 15,
     fontWeight: '500',
   },
   menuItemDanger: {
-    color: '#e94560',
+    color: theme.accent,
   },
   menuDivider: {
     height: 1,
-    backgroundColor: '#252840',
+    backgroundColor: theme.border,
   },
 });

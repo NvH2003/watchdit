@@ -4,13 +4,17 @@
   "version": "1.0.0",
   "dependencies": {
     "@expo/vector-icons": "^15.1.1",
+    "@instantdb/admin": "^1.0.67",
     "@instantdb/react-native": "^1.0.65",
     "@react-native-async-storage/async-storage": "2.2.0",
     "expo": "~57.0.14",
+    "expo-blur": "~57.0.2",
     "expo-constants": "~57.0.12",
+    "expo-document-picker": "~57.0.1",
     "expo-font": "~57.0.1",
     "expo-linking": "~57.0.6",
     "expo-router": "~57.0.14",
+    "expo-server": "~57.0.3",
     "expo-splash-screen": "~57.0.7",
     "expo-status-bar": "~57.0.1",
     "expo-symbols": "~57.0.2",
@@ -33,7 +37,8 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "vercel-build": "expo export -p web"
   },
   "private": true
 }

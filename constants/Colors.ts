@@ -1,19 +1,19 @@
-const accent = '#e94560';
+import { theme } from './theme';
 
 const Colors = {
   light: {
-    text: '#0d0f14',
-    background: '#f5f5f7',
-    tint: accent,
+    text: theme.bg,
+    background: '#f4f1ec',
+    tint: theme.accent,
     tabIconDefault: '#aaa',
-    tabIconSelected: accent,
+    tabIconSelected: theme.accent,
   },
   dark: {
-    text: '#ffffff',
-    background: '#0d0f14',
-    tint: accent,
-    tabIconDefault: '#555',
-    tabIconSelected: accent,
+    text: theme.text,
+    background: theme.bg,
+    tint: theme.accent,
+    tabIconDefault: theme.faint,
+    tabIconSelected: theme.accent,
   },
 };
 

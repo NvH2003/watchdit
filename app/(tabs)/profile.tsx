@@ -20,7 +20,7 @@ import {
 } from '@/lib/history';
 import { matchesQuery } from '@/components/SearchField';
 import FilterToolbar from '@/components/ListFilter';
-import TabScreen from '@/components/TabScreen';
+import InstallApp from '@/components/InstallApp';
 import { CollapsibleScrollView } from '@/components/TabBarCollapse';
 
 const HISTORY_PAGE = 40;
@@ -115,6 +115,7 @@ export default function ProfileScreen() {
           >
             <Text style={styles.signOutText}>Sign out</Text>
           </TouchableOpacity>
+          <InstallApp />
         </View>
 
         <View style={styles.statsRow}>

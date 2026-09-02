@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import db from '@/lib/db';
+import InstallApp from '@/components/InstallApp';
 import { signInWithPassword, signUpWithPassword } from '@/lib/passwordAuth';
 import { theme } from '@/constants/theme';
 
@@ -197,6 +198,7 @@ export default function AuthScreen() {
             )}
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
+            <InstallApp />
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

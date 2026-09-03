@@ -8,6 +8,7 @@ import { Platform } from 'react-native';
 import 'react-native-reanimated';
 
 import { useColorScheme } from '@/components/useColorScheme';
+import { useClientOnlyValue } from '@/components/useClientOnlyValue';
 import db, { instantAppId } from '@/lib/db';
 import AuthScreen from '@/components/AuthScreen';
 import HeaderBackButton from '@/components/HeaderBackButton';
@@ -65,38 +66,43 @@ function InstantSession({ colorScheme }: { colorScheme: ReturnType<typeof useCol
   const { isLoading, user, error } = db.useAuth();
   const status = db.useConnectionStatus();
   const [timedOut, setTimedOut] = useState(false);
+  const hydrated = useClientOnlyValue(false, true);
   useDedupeUserShows();
 
   useEffect(() => {
-    if (!isLoading) {
-      setTimedOut(false);
-      return;
-    }
-    const timer = setTimeout(() => setTimedOut(true), 8000);
+    const timer = setTimeout(() => setTimedOut(true), 5000);
     return () => clearTimeout(timer);
-  }, [isLoading]);
+  }, []);
 
-  const unreachable =
-    Boolean(error) ||
-    status === 'errored' ||
-    (isLoading && (timedOut || status === 'closed'));
+  const reload = () => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      window.location.reload();
+    } else {
+      setTimedOut(false);
+    }
+  };
 
-  if (unreachable && !user) {
+  if (error && !user) {
     return (
       <InstantUnreachable
-        detail={error?.message ?? (status === 'errored' ? 'WebSocket connection failed' : undefined)}
-        onRetry={() => {
-          if (Platform.OS === 'web' && typeof window !== 'undefined') {
-            window.location.reload();
-          } else {
-            setTimedOut(false);
-          }
-        }}
+        detail={error.message}
+        onRetry={reload}
       />
     );
   }
 
-  if (isLoading) return <InstantConnecting />;
+  if (status === 'errored' && !user) {
+    return (
+      <InstantUnreachable
+        detail="WebSocket connection failed"
+        onRetry={reload}
+      />
+    );
+  }
+
+  // Instant's SSR snapshot is always "loading". Don't spin forever if the live
+  // socket never opens, and don't wait for hydration to finish on the server.
+  if ((!hydrated || isLoading) && !timedOut) return <InstantConnecting />;
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>

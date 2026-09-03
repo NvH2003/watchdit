@@ -50,7 +50,11 @@ body {
 const registerServiceWorker = `
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    navigator.serviceWorker.getRegistrations().then((regs) => {
+      Promise.all(regs.map((r) => r.unregister())).finally(() => {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+      });
+    });
   });
 }
 `;

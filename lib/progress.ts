@@ -46,24 +46,60 @@ export function msUntilNextLocalMidnight(now = new Date()): number {
 }
 
 /**
- * Show belongs on To watch once its next episode has aired.
- * Includes upToDate rows that still need a status flip after the air date arrives.
+ * Show belongs on To watch once its next *unwatched* episode has aired.
+ * Ignores stale nextEpisode* fields that still point at an already-checked episode.
  */
 export function readyForWatchlist(
   status?: string | null,
-  nextEpisodeAirDate?: string | null
+  nextEpisodeAirDate?: string | null,
+  opts?: {
+    nextSeasonNum?: number | null;
+    nextEpisodeNum?: number | null;
+    watchedKeys?: Set<string>;
+  }
 ): boolean {
   if (status !== 'watching' && status !== 'upToDate') return false;
-  return hasAired(nextEpisodeAirDate);
+  if (!hasAired(nextEpisodeAirDate)) return false;
+  const season = opts?.nextSeasonNum;
+  const ep = opts?.nextEpisodeNum;
+  if (
+    opts?.watchedKeys &&
+    season != null &&
+    ep != null &&
+    Number.isFinite(season) &&
+    Number.isFinite(ep) &&
+    opts.watchedKeys.has(`${season}x${ep}`)
+  ) {
+    return false;
+  }
+  return true;
 }
 
-/** Show belongs on Coming up while the next episode still has a future air date. */
+/** Show belongs on Coming up while the next unwatched episode still has a future air date. */
 export function readyForUpcoming(
   status?: string | null,
-  nextEpisodeAirDate?: string | null
+  nextEpisodeAirDate?: string | null,
+  opts?: {
+    nextSeasonNum?: number | null;
+    nextEpisodeNum?: number | null;
+    watchedKeys?: Set<string>;
+  }
 ): boolean {
   if (status !== 'watching' && status !== 'upToDate') return false;
-  return isFutureAirDate(nextEpisodeAirDate);
+  if (!isFutureAirDate(nextEpisodeAirDate)) return false;
+  const season = opts?.nextSeasonNum;
+  const ep = opts?.nextEpisodeNum;
+  if (
+    opts?.watchedKeys &&
+    season != null &&
+    ep != null &&
+    Number.isFinite(season) &&
+    Number.isFinite(ep) &&
+    opts.watchedKeys.has(`${season}x${ep}`)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /** TMDB TV status: Ended / Canceled vs still running. */
@@ -150,16 +186,20 @@ export function computeProgress(
 }
 
 export function progressUpdates(result: ProgressResult): Record<string, unknown> {
-  const updates: Record<string, unknown> = { status: result.status };
+  // Always write next-episode fields so a catch-up / finish doesn't leave a stale
+  // aired SxE that would wrongly reappear on To watch.
+  const updates: Record<string, unknown> = {
+    status: result.status,
+    nextSeasonNum: result.nextSeasonNum ?? null,
+    nextEpisodeNum: result.nextEpisodeNum ?? null,
+    nextEpisodeName: result.nextEpisodeName ?? '',
+    nextEpisodeAirDate: result.nextEpisodeAirDate ?? '',
+    nextEpisodeStillPath: result.nextEpisodeStillPath ?? '',
+    unwatchedAiredCount: result.unwatchedAiredCount ?? 0,
+    remainingAiredCount: result.remainingAiredCount ?? 0,
+  };
   if (result.totalEpisodes != null) updates.totalEpisodes = result.totalEpisodes;
-  if (result.nextSeasonNum != null) updates.nextSeasonNum = result.nextSeasonNum;
-  if (result.nextEpisodeNum != null) updates.nextEpisodeNum = result.nextEpisodeNum;
-  if (result.nextEpisodeName != null) updates.nextEpisodeName = result.nextEpisodeName;
-  if (result.nextEpisodeAirDate != null) updates.nextEpisodeAirDate = result.nextEpisodeAirDate;
-  if (result.nextEpisodeStillPath != null) updates.nextEpisodeStillPath = result.nextEpisodeStillPath;
   if (result.originalLanguage != null) updates.tmdbOriginalLanguage = result.originalLanguage;
-  if (result.unwatchedAiredCount != null) updates.unwatchedAiredCount = result.unwatchedAiredCount;
-  if (result.remainingAiredCount != null) updates.remainingAiredCount = result.remainingAiredCount;
   return updates;
 }
 

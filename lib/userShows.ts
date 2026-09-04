@@ -132,13 +132,19 @@ export function useDedupeUserShows() {
 }
 
 /**
- * When an up-to-date show's next episode airs (calendar day), flip to watching
- * immediately so To watch / Profile update without waiting for a TMDB refresh.
+ * When an up-to-date show's next *unwatched* episode airs, flip to watching.
+ * Also repairs stale nextEpisode* rows that still point at an already-checked episode
+ * (those used to wrongly flood To watch after the air-date promote change).
  */
 export function usePromoteAiredUpToDate() {
   const { user } = db.useAuth();
   const { data } = db.useQuery(
-    user ? { userShows: { $: { where: { '$user.id': user.id } } } } : null
+    user
+      ? {
+          userShows: { $: { where: { '$user.id': user.id } } },
+          watchedEpisodes: { $: { where: { '$user.id': user.id } } },
+        }
+      : null
   );
   const [dayKey, setDayKey] = useState(() => localDayKey());
   const busy = useRef(false);
@@ -164,18 +170,67 @@ export function usePromoteAiredUpToDate() {
 
   useEffect(() => {
     if (!user || !data?.userShows || busy.current) return;
-    const due = data.userShows.filter(
-      s =>
-        s.status === 'upToDate' &&
-        hasAired(s.nextEpisodeAirDate as string | undefined)
-    );
-    if (due.length === 0) return;
+
+    const watchedByShow = new Map<number, Set<string>>();
+    for (const e of data.watchedEpisodes ?? []) {
+      const tmdbId = Number(e.tmdbShowId);
+      if (!Number.isFinite(tmdbId)) continue;
+      let set = watchedByShow.get(tmdbId);
+      if (!set) {
+        set = new Set();
+        watchedByShow.set(tmdbId, set);
+      }
+      set.add(`${e.seasonNumber}x${e.episodeNumber}`);
+    }
+
+    const clearStaleNext = {
+      nextSeasonNum: null,
+      nextEpisodeNum: null,
+      nextEpisodeName: '',
+      nextEpisodeAirDate: '',
+      nextEpisodeStillPath: '',
+      unwatchedAiredCount: 0,
+      remainingAiredCount: 0,
+    };
+
+    const txs: ReturnType<typeof db.tx.userShows[string]['update']>[] = [];
+
+    for (const s of data.userShows) {
+      if (s.status === 'watchLater' || s.status === 'finished') continue;
+      const tmdbId = Number(s.tmdbShowId);
+      const season = s.nextSeasonNum as number | undefined;
+      const ep = s.nextEpisodeNum as number | undefined;
+      const air = s.nextEpisodeAirDate as string | undefined;
+      const watched = watchedByShow.get(tmdbId);
+      const nextKey =
+        season != null && ep != null && Number.isFinite(season) && Number.isFinite(ep)
+          ? `${season}x${ep}`
+          : null;
+      const nextAlreadyWatched = Boolean(nextKey && watched?.has(nextKey));
+
+      if (nextAlreadyWatched) {
+        // Stale pointer at a checked episode — park as up to date until TMDB refresh.
+        txs.push(
+          db.tx.userShows[s.id].update({
+            status: 'upToDate',
+            ...clearStaleNext,
+          })
+        );
+        continue;
+      }
+
+      if (s.status === 'upToDate' && hasAired(air) && nextKey) {
+        txs.push(db.tx.userShows[s.id].update({ status: 'watching' }));
+      }
+    }
+
+    if (txs.length === 0) return;
 
     busy.current = true;
-    db.transact(due.map(s => db.tx.userShows[s.id].update({ status: 'watching' })))
-      .catch(e => console.warn('Failed to promote aired up-to-date shows', e))
+    db.transact(txs)
+      .catch(e => console.warn('Failed to promote/repair aired shows', e))
       .finally(() => {
         busy.current = false;
       });
-  }, [user, data?.userShows, dayKey]);
+  }, [user, data?.userShows, data?.watchedEpisodes, dayKey]);
 }

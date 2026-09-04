@@ -135,7 +135,20 @@ export default function EpisodesScreen() {
       const toCheck = allShows.filter(s => {
         if (s.status === 'watchLater' || s.status === 'finished') return false;
         const air = s.nextEpisodeAirDate as string | undefined;
-        // Next episode already out — refresh so To watch gets full +N / stills.
+        const season = s.nextSeasonNum as number | undefined;
+        const ep = s.nextEpisodeNum as number | undefined;
+        const tmdbId = s.tmdbShowId as number;
+        const nextWatched =
+          season != null &&
+          ep != null &&
+          watchedEps.some(
+            e =>
+              e.tmdbShowId === tmdbId &&
+              e.seasonNumber === season &&
+              e.episodeNumber === ep
+          );
+        // Stale next pointer or newly aired upToDate — refresh from TMDB.
+        if (nextWatched) return true;
         if (s.status === 'upToDate' && hasAired(air)) return true;
         // No known future episode — TMDB may have published a new one.
         if (s.status === 'upToDate' && !isFutureAirDate(air)) return true;
@@ -183,12 +196,40 @@ export default function EpisodesScreen() {
     }, [user?.id, allShows.length, watchedEps.length, dayKey])
   );
 
-  const watchlistShows = allShows.filter(s =>
-    readyForWatchlist(s.status as string | undefined, s.nextEpisodeAirDate as string | undefined)
-  );
-  const upcomingShows = allShows.filter(s =>
-    readyForUpcoming(s.status as string | undefined, s.nextEpisodeAirDate as string | undefined)
-  );
+  const watchlistShows = allShows.filter(s => {
+    const tmdbId = s.tmdbShowId as number;
+    const watchedKeys = new Set(
+      watchedEps
+        .filter(e => e.tmdbShowId === tmdbId)
+        .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+    );
+    return readyForWatchlist(
+      s.status as string | undefined,
+      s.nextEpisodeAirDate as string | undefined,
+      {
+        nextSeasonNum: s.nextSeasonNum as number | undefined,
+        nextEpisodeNum: s.nextEpisodeNum as number | undefined,
+        watchedKeys,
+      }
+    );
+  });
+  const upcomingShows = allShows.filter(s => {
+    const tmdbId = s.tmdbShowId as number;
+    const watchedKeys = new Set(
+      watchedEps
+        .filter(e => e.tmdbShowId === tmdbId)
+        .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+    );
+    return readyForUpcoming(
+      s.status as string | undefined,
+      s.nextEpisodeAirDate as string | undefined,
+      {
+        nextSeasonNum: s.nextSeasonNum as number | undefined,
+        nextEpisodeNum: s.nextEpisodeNum as number | undefined,
+        watchedKeys,
+      }
+    );
+  });
 
   const sections = useMemo(() => {
     const lastOf = (show: (typeof allShows)[0]) =>

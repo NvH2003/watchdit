@@ -14,15 +14,20 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import db from '@/lib/db';
 import InstallApp from '@/components/InstallApp';
-import { signInWithPassword, signUpWithPassword } from '@/lib/passwordAuth';
+import {
+  signInWithPassword,
+  signUpWithPassword,
+  resetPasswordWithCode,
+} from '@/lib/passwordAuth';
 import { theme } from '@/constants/theme';
 
-type Step = 'password' | 'code';
+type Step = 'password' | 'code' | 'forgot' | 'reset';
 
 export default function AuthScreen() {
   const [step, setStep] = useState<Step>('password');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -53,7 +58,7 @@ export default function AuthScreen() {
     }
   }
 
-  async function sendCode() {
+  async function sendCode(nextStep: 'code' | 'reset') {
     const trimmed = email.trim();
     if (!trimmed) {
       setError('Enter your email first');
@@ -63,7 +68,8 @@ export default function AuthScreen() {
     setError('');
     try {
       await db.auth.sendMagicCode({ email: trimmed });
-      setStep('code');
+      setCode('');
+      setStep(nextStep);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Something went wrong');
     } finally {
@@ -85,6 +91,39 @@ export default function AuthScreen() {
     }
   }
 
+  async function resetPassword() {
+    if (!email.trim() || !code.trim() || !password) return;
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      await resetPasswordWithCode(email, code, password);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Something went wrong');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function goPassword() {
+    setStep('password');
+    setCode('');
+    setConfirmPassword('');
+    setError('');
+  }
+
+  const subtitle =
+    step === 'password'
+      ? 'Track every show you watch'
+      : step === 'forgot'
+        ? 'Enter your email and we’ll send a reset code'
+        : step === 'reset'
+          ? `Enter the code we sent to ${email} and choose a new password`
+          : `Check your inbox — we sent a code to ${email}`;
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom', 'left', 'right']}>
       <KeyboardAvoidingView
@@ -103,11 +142,7 @@ export default function AuthScreen() {
               accessibilityLabel="Watch'd It"
             />
             <Text style={styles.title}>Watch'd It</Text>
-            <Text style={styles.subtitle}>
-              {step === 'password'
-                ? 'Track every show you watch'
-                : `Check your inbox — we sent a code to ${email}`}
-            </Text>
+            <Text style={styles.subtitle}>{subtitle}</Text>
 
             {step === 'password' ? (
               <>
@@ -140,6 +175,19 @@ export default function AuthScreen() {
                 />
                 <TouchableOpacity
                   accessibilityRole="button"
+                  style={styles.linkBtn}
+                  onPress={() => {
+                    setError('');
+                    setPassword('');
+                    setConfirmPassword('');
+                    setStep('forgot');
+                  }}
+                  disabled={loading}
+                >
+                  <Text style={styles.linkText}>Forgot password?</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
                   style={[styles.button, loading && styles.buttonDisabled]}
                   onPress={signIn}
                   disabled={loading}
@@ -161,13 +209,126 @@ export default function AuthScreen() {
                 <TouchableOpacity
                   accessibilityRole="button"
                   style={styles.backBtn}
-                  onPress={sendCode}
+                  onPress={() => sendCode('code')}
                   disabled={loading}
                 >
                   <Text style={styles.backText}>Email me a code instead</Text>
                 </TouchableOpacity>
               </>
-            ) : (
+            ) : null}
+
+            {step === 'forgot' ? (
+              <>
+                <TextInput
+                  style={styles.input}
+                  placeholder="your@email.com"
+                  placeholderTextColor={theme.faint}
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="email"
+                  textContentType="emailAddress"
+                  returnKeyType="send"
+                  onSubmitEditing={() => sendCode('reset')}
+                  autoFocus
+                />
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={[styles.button, loading && styles.buttonDisabled]}
+                  onPress={() => sendCode('reset')}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.buttonText}>Send reset code</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={styles.backBtn}
+                  onPress={goPassword}
+                  disabled={loading}
+                >
+                  <Text style={styles.backText}>← Back to sign in</Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
+
+            {step === 'reset' ? (
+              <>
+                <TextInput
+                  style={styles.input}
+                  placeholder="6-digit code"
+                  placeholderTextColor={theme.faint}
+                  value={code}
+                  onChangeText={setCode}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  autoFocus
+                  returnKeyType="next"
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="New password"
+                  placeholderTextColor={theme.faint}
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="new-password"
+                  textContentType="newPassword"
+                  returnKeyType="next"
+                />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Confirm new password"
+                  placeholderTextColor={theme.faint}
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  secureTextEntry
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoComplete="new-password"
+                  textContentType="newPassword"
+                  onSubmitEditing={resetPassword}
+                  returnKeyType="done"
+                />
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={[styles.button, loading && styles.buttonDisabled]}
+                  onPress={resetPassword}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.buttonText}>Reset password</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={styles.backBtn}
+                  onPress={() => sendCode('reset')}
+                  disabled={loading}
+                >
+                  <Text style={styles.backText}>Resend code</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  accessibilityRole="button"
+                  style={styles.backBtn}
+                  onPress={goPassword}
+                  disabled={loading}
+                >
+                  <Text style={styles.backText}>← Back to sign in</Text>
+                </TouchableOpacity>
+              </>
+            ) : null}
+
+            {step === 'code' ? (
               <>
                 <TextInput
                   style={styles.input}
@@ -196,12 +357,12 @@ export default function AuthScreen() {
                 <TouchableOpacity
                   accessibilityRole="button"
                   style={styles.backBtn}
-                  onPress={() => { setStep('password'); setCode(''); setError(''); }}
+                  onPress={goPassword}
                 >
                   <Text style={styles.backText}>← Use email and password</Text>
                 </TouchableOpacity>
               </>
-            )}
+            ) : null}
 
             {error ? <Text style={styles.error}>{error}</Text> : null}
             <InstallApp />
@@ -260,6 +421,18 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     borderWidth: 1,
     borderColor: theme.border,
+  },
+  linkBtn: {
+    alignSelf: 'flex-end',
+    marginTop: -4,
+    marginBottom: 12,
+    paddingVertical: 4,
+    paddingHorizontal: 2,
+  },
+  linkText: {
+    color: theme.accent,
+    fontSize: 14,
+    fontWeight: '600',
   },
   button: {
     width: '100%',

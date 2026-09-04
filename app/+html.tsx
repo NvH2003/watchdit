@@ -22,6 +22,7 @@ export default function Root({ children }: { children: ReactNode }) {
         <link rel="icon" type="image/png" href="/favicon.png" />
         <link rel="apple-touch-icon" href="/pwa-180.png" />
         <script dangerouslySetInnerHTML={{ __html: registerServiceWorker }} />
+        <script dangerouslySetInnerHTML={{ __html: detectBundleFailure }} />
 
         {/*
           Disable body scrolling on web. This makes ScrollView components work closer to how they do on native.
@@ -58,4 +59,15 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+`;
+
+const detectBundleFailure = `
+window.addEventListener('error', function (event) {
+  var el = event && event.target;
+  if (!el || el.tagName !== 'SCRIPT' || !el.src) return;
+  if (el.src.indexOf('/expo/static/') === -1 && el.src.indexOf('/_expo/static/') === -1) return;
+  var root = document.getElementById('root') || document.body;
+  if (!root) return;
+  root.innerHTML = '<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#121110;color:#f3efe8;font-family:system-ui,sans-serif;padding:32px;text-align:center"><h1 style="font-size:22px;margin:0 0 12px">Couldn’t load the app</h1><p style="color:#9a938a;line-height:1.5;margin:0 0 20px">The JavaScript bundle failed to load. Try a hard refresh.</p><button onclick="location.reload()" style="background:#e85d4c;color:#fff;border:0;border-radius:12px;padding:12px 24px;font-size:16px;font-weight:600;cursor:pointer">Try again</button></div>';
+}, true);
 `;

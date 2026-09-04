@@ -15,6 +15,7 @@ import HeaderBackButton from '@/components/HeaderBackButton';
 import { InstantConnecting, InstantUnreachable } from '@/components/InstantGate';
 import { theme } from '@/constants/theme';
 import { useDedupeUserShows, usePromoteAiredUpToDate, useBackfillEpisodeRuntimes } from '@/lib/userShows';
+import { useBackfillMovieCollections } from '@/lib/userMovies';
 
 export { ErrorBoundary } from 'expo-router';
 
@@ -70,6 +71,7 @@ function InstantSession({ colorScheme }: { colorScheme: ReturnType<typeof useCol
   useDedupeUserShows();
   usePromoteAiredUpToDate();
   useBackfillEpisodeRuntimes();
+  useBackfillMovieCollections();
 
   useEffect(() => {
     const timer = setTimeout(() => setTimedOut(true), 5000);

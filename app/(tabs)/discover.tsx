@@ -15,7 +15,11 @@ import { theme } from '@/constants/theme';
 import { hasAired, findProgressFromTmdb, progressUpdates } from '@/lib/progress';
 import { averageEpisodeRuntime } from '@/lib/stats';
 import { createUserShowTx, uniqueByTmdbShowId } from '@/lib/userShows';
-import { createUserMovieTx, uniqueByTmdbMovieId } from '@/lib/userMovies';
+import {
+  createUserMovieTx,
+  uniqueByTmdbMovieId,
+  collectionAttrsFromTmdb,
+} from '@/lib/userMovies';
 import FilterToolbar from '@/components/ListFilter';
 import TabScreen from '@/components/TabScreen';
 import { CollapsibleScrollView } from '@/components/TabBarCollapse';
@@ -246,6 +250,7 @@ export default function DiscoverScreen() {
           tmdbPosterPath: details.poster_path ?? movie.poster_path ?? '',
           tmdbReleaseDate: details.release_date || provisionalRelease,
           runtime: details.runtime ?? undefined,
+          ...collectionAttrsFromTmdb(details),
         }),
       ]);
     } catch (e) {

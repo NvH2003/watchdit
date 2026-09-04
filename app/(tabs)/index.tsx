@@ -25,7 +25,7 @@ import {
 import { episodeRuntimeMinutes } from '@/lib/stats';
 import { tmdb } from '@/lib/tmdb';
 import { theme } from '@/constants/theme';
-import { uniqueByTmdbShowId } from '@/lib/userShows';
+import { uniqueByTmdbShowId, activateShowWatching } from '@/lib/userShows';
 import {
   lastWatchedAt,
   watchedCount,
@@ -310,6 +310,28 @@ export default function EpisodesScreen() {
   }
 
   async function handleStatusChange(showId: string, status: ShowStatus) {
+    const show = allShows.find(s => s.id === showId);
+    if (status === 'watching' && show) {
+      const tmdbId = show.tmdbShowId as number;
+      const watchedKeys = new Set(
+        watchedEps
+          .filter(e => e.tmdbShowId === tmdbId)
+          .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+      );
+      try {
+        await activateShowWatching({
+          userShowId: showId,
+          tmdbShowId: tmdbId,
+          watchedKeys,
+          fromWatchLater: show.status === 'watchLater',
+          startSeason: 1,
+          originalLanguage: (show.tmdbOriginalLanguage as string | undefined) || undefined,
+        });
+        return;
+      } catch (e) {
+        console.warn('Failed to activate watching', e);
+      }
+    }
     await db.transact([db.tx.userShows[showId].update({ status })]);
   }
 
@@ -709,8 +731,9 @@ const styles = StyleSheet.create({
   gridWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    justifyContent: 'flex-start',
     paddingHorizontal: 16,
-    gap: 12,
+    gap: 10,
   },
   undoBar: {
     position: 'absolute',

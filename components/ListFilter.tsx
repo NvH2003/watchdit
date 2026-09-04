@@ -1,6 +1,6 @@
 import { View, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import FilterChips from '@/components/FilterChips';
+import SearchableDropdown from '@/components/SearchableDropdown';
 import Glass from '@/components/Glass';
 import { theme } from '@/constants/theme';
 
@@ -10,6 +10,8 @@ export type FilterMenu = {
   value: string;
   onChange: (key: string) => void;
   options: FilterMenuOption[];
+  placeholder?: string;
+  searchPlaceholder?: string;
 };
 
 export function FilterToggle({
@@ -53,12 +55,14 @@ export default function FilterToolbar({
 }) {
   const searchPrimary = searchPlacement === 'primary';
   const showSearch = onQueryChange != null;
-  const chips = menus.map(menu => (
-    <FilterChips
+  const dropdowns = menus.map(menu => (
+    <SearchableDropdown
       key={menu.options.map(option => option.key).join('-')}
       options={menu.options}
       value={menu.value}
       onChange={menu.onChange}
+      placeholder={menu.placeholder ?? 'All collections'}
+      searchPlaceholder={menu.searchPlaceholder ?? 'Search collections'}
     />
   ));
 
@@ -108,18 +112,18 @@ export default function FilterToolbar({
     )
   ) : null;
 
-  if (!showSearch && chips.length === 0) return null;
+  if (!showSearch && dropdowns.length === 0) return null;
 
   return (
     <View>
       {searchPrimary ? (
         <>
           {search}
-          {chips}
+          {dropdowns}
         </>
       ) : (
         <>
-          {chips}
+          {dropdowns}
           {search}
         </>
       )}

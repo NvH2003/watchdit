@@ -21,7 +21,11 @@ import {
 import db from '@/lib/db';
 import { hasAired } from '@/lib/progress';
 import { theme } from '@/constants/theme';
-import { uniqueByTmdbMovieId, createUserMovieTx } from '@/lib/userMovies';
+import {
+  uniqueByTmdbMovieId,
+  createUserMovieTx,
+  collectionAttrsFromTmdb,
+} from '@/lib/userMovies';
 import EpisodeCheck from '@/components/EpisodeCheck';
 
 type MovieStatus = 'watching' | 'watchLater' | 'finished';
@@ -97,6 +101,7 @@ export default function MovieDetailScreen() {
       lastTouchedAt: now,
       tmdbReleaseDate: movie.release_date ?? '',
       runtime: movie.runtime ?? undefined,
+      ...collectionAttrsFromTmdb(movie),
       ...(status === 'finished' ? { watchedAt: now } : {}),
     });
     await db.transact([tx]);

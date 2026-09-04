@@ -29,7 +29,7 @@ export default function ShowGridCard({
     <TouchableOpacity style={styles.card} onPress={onPress} activeOpacity={0.8}>
       <View style={styles.posterWrapper}>
         {poster ? (
-          <Image source={{ uri: poster }} style={styles.poster} />
+          <Image source={{ uri: poster }} style={styles.poster} resizeMode="cover" />
         ) : (
           <View style={[styles.poster, styles.placeholder]}>
             <Text style={styles.placeholderEmoji}>📺</Text>
@@ -55,9 +55,10 @@ export default function ShowGridCard({
 
 const styles = StyleSheet.create({
   card: {
-    flex: 1,
-    marginBottom: 20,
-    maxWidth: '48%',
+    width: 112,
+    flexGrow: 0,
+    flexShrink: 0,
+    marginBottom: 4,
   },
   posterWrapper: {
     width: '100%',
@@ -75,23 +76,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   placeholderEmoji: {
-    fontSize: 36,
+    fontSize: 28,
   },
   badge: {
     position: 'absolute',
-    top: 8,
-    right: 8,
+    top: 6,
+    right: 6,
     backgroundColor: theme.accent,
-    borderRadius: 12,
-    minWidth: 24,
-    height: 24,
+    borderRadius: 10,
+    minWidth: 22,
+    height: 22,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 6,
+    paddingHorizontal: 5,
   },
   badgeText: {
     color: theme.text,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
   },
   progressBar: {
@@ -99,7 +100,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    height: 4,
+    height: 3,
     backgroundColor: 'rgba(0,0,0,0.4)',
   },
   progressFill: {
@@ -108,9 +109,9 @@ const styles = StyleSheet.create({
   },
   name: {
     color: theme.text,
-    fontSize: 13,
-    marginTop: 8,
+    fontSize: 12,
+    marginTop: 6,
     fontWeight: '500',
-    lineHeight: 18,
+    lineHeight: 16,
   },
 });

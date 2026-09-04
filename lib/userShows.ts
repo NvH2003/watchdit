@@ -1,9 +1,54 @@
 import { useEffect, useRef, useState } from 'react';
 import { id as instantId } from '@instantdb/react-native';
 import db from './db';
-import { hasAired, localDayKey, msUntilNextLocalMidnight } from './progress';
+import {
+  findProgressFromTmdb,
+  hasAired,
+  localDayKey,
+  msUntilNextLocalMidnight,
+  progressUpdates,
+} from './progress';
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
+import { staleCutoff } from './watchlist';
+
+/** Touch timestamp that places a show in "Haven't watched in a while". */
+export function staleWatchlistTouchIso(now = new Date()): string {
+  return new Date(staleCutoff(now).getTime() - 24 * 60 * 60 * 1000).toISOString();
+}
+
+/**
+ * Move a show onto Watching and refresh next-episode fields so it can appear
+ * on To watch immediately. From Watch Later, lands in "Haven't watched in a while".
+ */
+export async function activateShowWatching(opts: {
+  userShowId: string;
+  tmdbShowId: number;
+  watchedKeys: Set<string>;
+  fromWatchLater?: boolean;
+  startSeason?: number;
+  originalLanguage?: string;
+}): Promise<void> {
+  const progress = await findProgressFromTmdb(
+    opts.tmdbShowId,
+    opts.watchedKeys,
+    opts.startSeason ?? 1
+  );
+  const updates: Record<string, unknown> = {
+    ...progressUpdates(progress),
+  };
+  // Keep the user's Watching choice if TMDB would mark the show finished.
+  if (updates.status === 'finished') {
+    updates.status = 'watching';
+  }
+  if (opts.fromWatchLater) {
+    updates.lastTouchedAt = staleWatchlistTouchIso();
+  }
+  if (opts.originalLanguage) {
+    updates.tmdbOriginalLanguage = opts.originalLanguage;
+  }
+  await db.transact([db.tx.userShows[opts.userShowId].update(updates)]);
+}
 
 export function ownerShowKey(userId: string, tmdbShowId: number): string {
   return `${userId}:${tmdbShowId}`;

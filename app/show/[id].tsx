@@ -19,7 +19,7 @@ import { progressUpdates, hasAired, isFutureAirDate, findProgressFromTmdb } from
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from '@/lib/stats';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
-import { uniqueByTmdbShowId, createUserShowTx } from '@/lib/userShows';
+import { uniqueByTmdbShowId, createUserShowTx, activateShowWatching } from '@/lib/userShows';
 
 type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
 
@@ -410,6 +410,26 @@ export default function ShowDetailScreen() {
   async function setStatus(status: ShowStatus) {
     if (!user) return;
     if (userShow) {
+      const fromWatchLater = userShow.status === 'watchLater';
+      if (status === 'watching') {
+        const watched = new Set(
+          watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+        );
+        try {
+          await activateShowWatching({
+            userShowId: userShow.id,
+            tmdbShowId: showId,
+            watchedKeys: watched,
+            fromWatchLater,
+            startSeason: 1,
+            originalLanguage: show?.original_language ?? undefined,
+          });
+        } catch (e) {
+          console.warn('Failed to activate watching', e);
+          await db.transact([db.tx.userShows[userShow.id].update({ status })]);
+        }
+        return;
+      }
       await db.transact([db.tx.userShows[userShow.id].update({ status })]);
     } else if (show) {
       const now = new Date().toISOString();

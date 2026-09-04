@@ -62,9 +62,13 @@ export function bucketForShow(
   episodeCount: number,
   lastWatch: number | null
 ): WatchlistBucket {
-  if (episodeCount === 0) return 'notStarted';
   const last = lastWatch ?? sortTime(show, null);
-  if (last < staleCutoff().getTime()) return 'stale';
+  const isStale = last < staleCutoff().getTime();
+
+  // No watches yet: freshly added → Not started; promoted from Watch Later
+  // (touch set older than the stale cutoff) → Haven't watched in a while.
+  if (episodeCount === 0) return isStale ? 'stale' : 'notStarted';
+  if (isStale) return 'stale';
   return 'watchNext';
 }
 

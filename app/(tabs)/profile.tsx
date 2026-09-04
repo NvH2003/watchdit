@@ -5,44 +5,65 @@ import {
   StyleSheet,
   TouchableOpacity,
   Image,
+  ActivityIndicator,
+  Alert,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
 import db from '@/lib/db';
 import { theme } from '@/constants/theme';
-import { uniqueByTmdbShowId } from '@/lib/userShows';
+import { uniqueByTmdbShowId, activateShowWatching } from '@/lib/userShows';
 import { uniqueByTmdbMovieId } from '@/lib/userMovies';
 import { posterUrl } from '@/lib/tmdb';
 import {
+  buildCombinedWatchHistory,
+  buildMovieWatchHistory,
   buildWatchHistory,
+  collapseHistorySessions,
   countValidWatches,
-  episodeCode,
+  formatSessionEpisodes,
   formatWatchTime,
 } from '@/lib/history';
 import { computeWatchStats, formatDurationMinutes } from '@/lib/stats';
+import { readyForWatchlist } from '@/lib/progress';
+import {
+  bucketForShow,
+  lastWatchedAt,
+  sortNotStarted,
+  sortStale,
+  sortWatchNext,
+  watchedCount,
+  type WatchlistBucket,
+} from '@/lib/watchlist';
 import { matchesQuery } from '@/components/SearchField';
-import FilterToolbar from '@/components/ListFilter';
+import SearchField from '@/components/SearchField';
+import ShowGridCard from '@/components/ShowGridCard';
+import SegmentTabs from '@/components/SegmentTabs';
+import FilterChips from '@/components/FilterChips';
 import TabScreen from '@/components/TabScreen';
 import InstallApp from '@/components/InstallApp';
 import { CollapsibleScrollView } from '@/components/TabBarCollapse';
 
-const HISTORY_PAGE = 40;
+type ProfileTab = 'toWatch' | 'later' | 'watched' | 'history';
+type MediaFilter = 'all' | 'tv' | 'movie';
 
-type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
+const HISTORY_PAGE = 24;
 
-const STATUS_CONFIG: { key: ShowStatus; label: string; color: string }[] = [
-  { key: 'watching', label: 'Watching', color: theme.accent },
-  { key: 'upToDate', label: 'Up to Date', color: theme.sky },
-  { key: 'watchLater', label: 'Watch Later', color: theme.gold },
-  { key: 'finished', label: 'Finished', color: theme.check },
+const TO_WATCH_SECTIONS: { key: WatchlistBucket; title: string }[] = [
+  { key: 'watchNext', title: 'Continue watching' },
+  { key: 'stale', title: "Haven't watched in a while" },
+  { key: 'notStarted', title: 'Not started' },
 ];
 
 export default function ProfileScreen() {
   const router = useRouter();
   const { user } = db.useAuth();
-  const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE);
+  const [tab, setTab] = useState<ProfileTab>('history');
+  const [mediaFilter, setMediaFilter] = useState<MediaFilter>('all');
   const [query, setQuery] = useState('');
-  const [mediaFilter, setMediaFilter] = useState<'all' | 'tv' | 'movie'>('all');
-  const [statusFilter, setStatusFilter] = useState<'all' | ShowStatus>('all');
+  const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE);
+  const [movingLater, setMovingLater] = useState<'series' | 'movies' | null>(null);
 
   const { data } = db.useQuery(
     user
@@ -58,303 +79,658 @@ export default function ProfileScreen() {
   const movies = uniqueByTmdbMovieId(data?.userMovies ?? []);
   const watchedEpisodes = data?.watchedEpisodes ?? [];
   const historyTotal = countValidWatches(watchedEpisodes);
+
   const stats = useMemo(
     () => computeWatchStats(watchedEpisodes, shows, movies),
     [watchedEpisodes, shows, movies]
   );
-  const { days: historyDays, matchedTotal: historyMatchCount } = useMemo(
-    () => buildWatchHistory(watchedEpisodes, shows, historyLimit, query),
-    [watchedEpisodes, shows, historyLimit, query]
+
+  const watchedByShow = useMemo(() => {
+    const map = new Map<number, number>();
+    for (const ep of watchedEpisodes) {
+      const id = Number(ep.tmdbShowId);
+      if (!Number.isFinite(id)) continue;
+      map.set(id, (map.get(id) ?? 0) + 1);
+    }
+    return map;
+  }, [watchedEpisodes]);
+
+  const toWatchShows = useMemo(() => {
+    return shows.filter(s => {
+      if (!matchesQuery(s.tmdbShowName as string, query)) return false;
+      if (s.status === 'watchLater') return false;
+      const tmdbId = s.tmdbShowId as number;
+      const watchedKeys = new Set(
+        watchedEpisodes
+          .filter(e => e.tmdbShowId === tmdbId)
+          .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+      );
+      return readyForWatchlist(
+        s.status as string | undefined,
+        s.nextEpisodeAirDate as string | undefined,
+        {
+          nextSeasonNum: s.nextSeasonNum as number | undefined,
+          nextEpisodeNum: s.nextEpisodeNum as number | undefined,
+          watchedKeys,
+        }
+      );
+    });
+  }, [shows, watchedEpisodes, query]);
+
+  const toWatchSections = useMemo(() => {
+    const lastOf = (show: (typeof shows)[0]) =>
+      lastWatchedAt(watchedEpisodes, show.tmdbShowId as number);
+
+    const buckets: Record<WatchlistBucket, typeof shows> = {
+      watchNext: [],
+      stale: [],
+      notStarted: [],
+    };
+
+    for (const show of toWatchShows) {
+      const tmdbId = show.tmdbShowId as number;
+      const bucket = bucketForShow(
+        show,
+        watchedCount(watchedEpisodes, tmdbId),
+        lastOf(show)
+      );
+      buckets[bucket].push(show);
+    }
+
+    return TO_WATCH_SECTIONS.map(({ key, title }) => ({
+      key,
+      title,
+      data:
+        key === 'watchNext'
+          ? sortWatchNext(buckets[key], lastOf)
+          : key === 'stale'
+            ? sortStale(buckets[key], lastOf)
+            : sortNotStarted(buckets[key], lastOf),
+    })).filter(s => s.data.length > 0);
+  }, [toWatchShows, watchedEpisodes, shows]);
+
+  const laterShows = useMemo(
+    () =>
+      shows.filter(
+        s =>
+          s.status === 'watchLater' &&
+          matchesQuery(s.tmdbShowName as string, query)
+      ),
+    [shows, query]
   );
 
-  const grouped = Object.fromEntries(
-    STATUS_CONFIG.map(s => [
-      s.key,
-      shows.filter(show => show.status === s.key),
-    ])
-  ) as Record<ShowStatus, typeof shows>;
+  const watchedShows = useMemo(
+    () =>
+      shows.filter(
+        s =>
+          (s.status === 'finished' || s.status === 'upToDate') &&
+          matchesQuery(s.tmdbShowName as string, query)
+      ),
+    [shows, query]
+  );
+  const toWatchMovies = useMemo(
+    () =>
+      movies.filter(
+        m =>
+          m.status === 'watching' &&
+          matchesQuery(m.tmdbMovieName as string, query)
+      ),
+    [movies, query]
+  );
+  const laterMovies = useMemo(
+    () =>
+      movies.filter(
+        m =>
+          m.status === 'watchLater' &&
+          matchesQuery(m.tmdbMovieName as string, query)
+      ),
+    [movies, query]
+  );
+  const watchedMovies = useMemo(
+    () =>
+      movies.filter(
+        m =>
+          m.status === 'finished' &&
+          matchesQuery(m.tmdbMovieName as string, query)
+      ),
+    [movies, query]
+  );
 
   const showSeries = mediaFilter !== 'movie';
   const showMovies = mediaFilter !== 'tv';
 
-  const filteredMovies = movies.filter(movie => {
-    if (!matchesQuery(movie.tmdbMovieName as string, query)) return false;
-    if (statusFilter === 'all') return true;
-    if (statusFilter === 'upToDate') return false;
-    return movie.status === statusFilter;
-  });
+  const toWatchCount =
+    (showSeries ? toWatchShows.length : 0) + (showMovies ? toWatchMovies.length : 0);
+  const laterCount =
+    (showSeries ? laterShows.length : 0) + (showMovies ? laterMovies.length : 0);
+  const watchedCountTotal =
+    (showSeries ? watchedShows.length : 0) + (showMovies ? watchedMovies.length : 0);
 
-  const filteredGrouped = Object.fromEntries(
-    STATUS_CONFIG.map(s => [
-      s.key,
-      (grouped[s.key] ?? []).filter(show => {
-        if (statusFilter !== 'all' && s.key !== statusFilter) return false;
-        return matchesQuery(show.tmdbShowName as string, query);
-      }),
-    ])
-  ) as Record<ShowStatus, typeof shows>;
+  const { days: historyDays, matchedTotal: historyMatchCount } = useMemo(() => {
+    if (mediaFilter === 'tv') {
+      return buildWatchHistory(watchedEpisodes, shows, historyLimit, query);
+    }
+    if (mediaFilter === 'movie') {
+      return buildMovieWatchHistory(movies, historyLimit, query);
+    }
+    return buildCombinedWatchHistory(
+      watchedEpisodes,
+      shows,
+      movies,
+      historyLimit,
+      query
+    );
+  }, [watchedEpisodes, shows, movies, historyLimit, query, mediaFilter]);
 
-  const hasLibraryMatches =
-    (showMovies && filteredMovies.length > 0) ||
-    (showSeries && STATUS_CONFIG.some(s => (filteredGrouped[s.key] ?? []).length > 0));
-  const filtersActive = Boolean(query.trim()) || mediaFilter !== 'all' || statusFilter !== 'all';
-  const historyCountsForEmpty = showSeries && statusFilter === 'all' && historyMatchCount > 0;
-  const nothingMatches = filtersActive && !hasLibraryMatches && !historyCountsForEmpty;
-  const showHistorySection = showSeries && statusFilter === 'all' && !nothingMatches;
+  const historySessionsByDay = useMemo(
+    () =>
+      historyDays.map(day => ({
+        ...day,
+        sessions: collapseHistorySessions(day.entries),
+      })),
+    [historyDays]
+  );
+
+  const laterShowsAll = useMemo(
+    () => shows.filter(s => s.status === 'watchLater'),
+    [shows]
+  );
+  const laterMoviesAll = useMemo(
+    () => movies.filter(m => m.status === 'watchLater'),
+    [movies]
+  );
+
+  async function confirmBulk(title: string, message: string): Promise<boolean> {
+    if (Platform.OS === 'web') {
+      return window.confirm(`${title}\n\n${message}`);
+    }
+    return new Promise(resolve => {
+      Alert.alert(title, message, [
+        { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+        { text: 'Move all', onPress: () => resolve(true) },
+      ]);
+    });
+  }
+
+  async function moveLaterSeriesToWatching() {
+    if (!user || movingLater) return;
+    const targets = laterShowsAll;
+    if (targets.length === 0) return;
+    const ok = await confirmBulk(
+      'Move series to To watch',
+      `Move ${targets.length} series from Watch Later to Watching?`
+    );
+    if (!ok) return;
+
+    setMovingLater('series');
+    try {
+      for (const show of targets) {
+        const tmdbId = Number(show.tmdbShowId);
+        if (!Number.isFinite(tmdbId)) continue;
+        const watchedKeys = new Set(
+          watchedEpisodes
+            .filter(e => e.tmdbShowId === tmdbId)
+            .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+        );
+        await activateShowWatching({
+          userShowId: show.id,
+          tmdbShowId: tmdbId,
+          watchedKeys,
+          fromWatchLater: true,
+          originalLanguage: show.tmdbOriginalLanguage as string | undefined,
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to move later series', e);
+    } finally {
+      setMovingLater(null);
+    }
+  }
+
+  async function moveLaterMoviesToWatching() {
+    if (!user || movingLater) return;
+    const targets = laterMoviesAll;
+    if (targets.length === 0) return;
+    const ok = await confirmBulk(
+      'Move movies to To watch',
+      `Move ${targets.length} movies from Watch Later to Watching?`
+    );
+    if (!ok) return;
+
+    setMovingLater('movies');
+    try {
+      const now = new Date().toISOString();
+      const chunkSize = 50;
+      for (let i = 0; i < targets.length; i += chunkSize) {
+        const chunk = targets.slice(i, i + chunkSize);
+        await db.transact(
+          chunk.map(movie =>
+            db.tx.userMovies[movie.id].update({
+              status: 'watching',
+              lastTouchedAt: now,
+            })
+          )
+        );
+      }
+    } catch (e) {
+      console.warn('Failed to move later movies', e);
+    } finally {
+      setMovingLater(null);
+    }
+  }
+
+  const emptyCopy =
+    tab === 'toWatch'
+      ? 'Nothing left on your list — add shows from Discover or import TV Time.'
+      : tab === 'later'
+        ? 'Save shows for later and they’ll show up here.'
+        : tab === 'watched'
+          ? 'Finished and caught-up titles will show up here.'
+          : 'Episodes you check off will appear here.';
+
+  const hasItems =
+    tab === 'toWatch'
+      ? toWatchCount > 0
+      : tab === 'later'
+        ? laterCount > 0
+        : tab === 'watched'
+          ? watchedCountTotal > 0
+          : historyMatchCount > 0;
 
   return (
     <TabScreen>
       <CollapsibleScrollView contentContainerStyle={styles.content}>
-        <View style={styles.header}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>
-              {user?.email?.[0]?.toUpperCase() ?? '?'}
-            </Text>
+        <View style={styles.topBar}>
+          <View style={styles.identity}>
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>
+                {user?.email?.[0]?.toUpperCase() ?? '?'}
+              </Text>
+            </View>
+            <View style={styles.identityText}>
+              <Text style={styles.email} numberOfLines={1}>
+                {user?.email}
+              </Text>
+            </View>
           </View>
-          <Text style={styles.email} numberOfLines={1}>
-            {user?.email}
-          </Text>
           <TouchableOpacity
             style={styles.signOutBtn}
             onPress={() => db.auth.signOut()}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
           >
             <Text style={styles.signOutText}>Sign out</Text>
           </TouchableOpacity>
-          <InstallApp />
         </View>
 
         <View style={styles.statsBlock}>
-          <View style={styles.statsWash} pointerEvents="none" />
           <Text style={styles.statsKicker}>Watch time</Text>
-          <Text style={styles.statsHeroValue}>
+          <Text style={styles.statsHero}>
             {formatDurationMinutes(stats.totalMinutes)}
           </Text>
-
-          <View style={styles.statsLine}>
-            <Text style={styles.statsChip}>
-              {formatDurationMinutes(stats.episodeMinutes)} series
-            </Text>
-            <Text style={styles.statsSep}>·</Text>
-            <Text style={styles.statsChip}>
-              {formatDurationMinutes(stats.movieMinutes)} movies
-            </Text>
-            <Text style={styles.statsSep}>·</Text>
-            <Text style={styles.statsChip}>
-              {stats.episodeCount.toLocaleString()} ep
-            </Text>
-            <Text style={styles.statsSep}>·</Text>
-            <Text style={styles.statsChip}>
-              {stats.showCount.toLocaleString()} shows
-            </Text>
-            <Text style={styles.statsSep}>·</Text>
-            <Text style={styles.statsChip}>
-              {movies.length.toLocaleString()} films
-            </Text>
-            <Text style={styles.statsSep}>·</Text>
-            <Text style={styles.statsChip}>
-              {formatDurationMinutes(stats.thisWeekMinutes)} this week
-              {stats.thisWeekEpisodes > 0
-                ? ` (${stats.thisWeekEpisodes.toLocaleString()} ep)`
-                : ''}
-            </Text>
+          <View style={styles.statsRow}>
+            <View style={styles.statCell}>
+              <Text style={styles.statValue}>
+                {formatDurationMinutes(stats.thisWeekMinutes)}
+              </Text>
+              <Text style={styles.statLabel}>This week</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statCell}>
+              <Text style={styles.statValue}>
+                {stats.episodeCount.toLocaleString()}
+              </Text>
+              <Text style={styles.statLabel}>Episodes</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statCell}>
+              <Text style={styles.statValue}>
+                {stats.showCount.toLocaleString()}
+              </Text>
+              <Text style={styles.statLabel}>Shows</Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statCell}>
+              <Text style={styles.statValue}>
+                {stats.movieWatchedCount.toLocaleString()}
+              </Text>
+              <Text style={styles.statLabel}>Movies</Text>
+            </View>
           </View>
+          <Text style={styles.statsBreakdown}>
+            {formatDurationMinutes(stats.episodeMinutes)} series
+            {' · '}
+            {formatDurationMinutes(stats.movieMinutes)} movies
+          </Text>
         </View>
 
-        <View style={styles.statusGrid}>
-          {STATUS_CONFIG.map(({ key, label, color }) => {
-            const count = grouped[key]?.length ?? 0;
-            const active = statusFilter === key;
-            return (
-              <TouchableOpacity
-                key={key}
-                style={[
-                  styles.statusCard,
-                  { borderLeftColor: color },
-                  active && styles.statusCardActive,
-                ]}
-                onPress={() => setStatusFilter(current => (current === key ? 'all' : key))}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-                accessibilityLabel={`Filter ${label}`}
-              >
-                <Text style={[styles.statusCount, { color }]}>{count}</Text>
-                <Text style={styles.statusLabel}>{label}</Text>
-              </TouchableOpacity>
-            );
-          })}
+        <TouchableOpacity
+          style={styles.importBtn}
+          onPress={() => router.push('/import' as never)}
+          accessibilityRole="button"
+          accessibilityLabel="Import from TV Time"
+        >
+          <View style={styles.importIconWrap}>
+            <Ionicons name="download-outline" size={20} color={theme.accent} />
+          </View>
+          <View style={styles.importBtnText}>
+            <Text style={styles.importBtnTitle}>Import from TV Time</Text>
+            <Text style={styles.importBtnSub}>Bring in your GDPR export</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+        </TouchableOpacity>
+
+        <InstallApp />
+
+        <View style={styles.tabsRow}>
+          <SegmentTabs
+            value={tab}
+            onChange={key => {
+              setTab(key);
+              if (key !== 'history') setHistoryLimit(HISTORY_PAGE);
+            }}
+            options={[
+              {
+                key: 'history',
+                label: `History${
+                  historyMatchCount > 0 || historyTotal > 0
+                    ? ` (${historyMatchCount.toLocaleString()})`
+                    : ''
+                }`,
+              },
+              { key: 'toWatch', label: `To watch (${toWatchCount})` },
+              { key: 'later', label: `Later (${laterCount})` },
+              { key: 'watched', label: `Watched (${watchedCountTotal})` },
+            ]}
+          />
         </View>
 
-        <FilterToolbar
-          query={query}
-          onQueryChange={setQuery}
-          placeholder="Search by name"
-          menus={[
-            {
-              value: mediaFilter,
-              onChange: key => setMediaFilter(key as 'all' | 'tv' | 'movie'),
-              options: [
-                { key: 'all', label: 'All' },
-                { key: 'tv', label: 'Series' },
-                { key: 'movie', label: 'Movies' },
-              ],
-            },
-            {
-              value: statusFilter,
-              onChange: key => setStatusFilter(key as 'all' | ShowStatus),
-              options: [
-                { key: 'all', label: 'Any status' },
-                { key: 'watching', label: 'Watching' },
-                { key: 'upToDate', label: 'Up to date' },
-                { key: 'watchLater', label: 'Later' },
-                { key: 'finished', label: 'Finished' },
-              ],
-            },
+        <FilterChips
+          value={mediaFilter}
+          onChange={setMediaFilter}
+          options={[
+            { key: 'all', label: 'All' },
+            { key: 'tv', label: 'Series' },
+            { key: 'movie', label: 'Movies' },
           ]}
         />
 
-        {nothingMatches ? (
-          <View style={styles.filterEmpty}>
-            <Text style={styles.filterEmptyTitle}>No matches</Text>
-            <Text style={styles.filterEmptySub}>Try a different name or filter.</Text>
+        <SearchField
+          value={query}
+          onChange={setQuery}
+          placeholder={tab === 'history' ? 'Search history' : 'Search your list'}
+        />
+
+        {!hasItems ? (
+          <View style={styles.empty}>
+            <Text style={styles.emptyTitle}>
+              {query.trim() ? 'No matches' : 'Nothing here yet'}
+            </Text>
+            <Text style={styles.emptySub}>
+              {query.trim() ? 'Try a different name.' : emptyCopy}
+            </Text>
           </View>
         ) : null}
 
-        {showHistorySection ? (
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <View style={[styles.sectionDot, { backgroundColor: theme.accent }]} />
-            <Text style={styles.sectionTitle}>Watch history</Text>
-            {historyTotal > 0 ? (
-              <Text style={styles.sectionCount}>
-                {query.trim() ? `${historyMatchCount}` : historyTotal}
-              </Text>
+        {tab === 'toWatch' && hasItems ? (
+          <>
+            {showSeries
+              ? toWatchSections.map(section => (
+                  <View key={section.key} style={styles.section}>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.sectionTitle}>{section.title.toUpperCase()}</Text>
+                      <Text style={styles.sectionCount}>{section.data.length}</Text>
+                    </View>
+                    <View style={styles.grid}>
+                      {section.data.map(show => {
+                        const tmdbId = show.tmdbShowId as number;
+                        const watched = watchedByShow.get(tmdbId) ?? 0;
+                        const total = Number(show.totalEpisodes);
+                        const remaining =
+                          show.status === 'watching'
+                            ? Math.max(0, Number(show.remainingAiredCount) || 0) + 1
+                            : undefined;
+                        return (
+                          <ShowGridCard
+                            key={show.id}
+                            name={show.tmdbShowName as string}
+                            posterPath={show.tmdbPosterPath as string | undefined}
+                            unwatchedCount={remaining}
+                            watchedCount={watched}
+                            totalEpisodes={
+                              Number.isFinite(total) && total > 0 ? total : undefined
+                            }
+                            onPress={() => router.push(`/show/${tmdbId}`)}
+                          />
+                        );
+                      })}
+                    </View>
+                  </View>
+                ))
+              : null}
+            {showMovies && toWatchMovies.length > 0 ? (
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>MOVIES</Text>
+                  <Text style={styles.sectionCount}>{toWatchMovies.length}</Text>
+                </View>
+                <View style={styles.grid}>
+                  {toWatchMovies.map(movie => (
+                    <ShowGridCard
+                      key={movie.id}
+                      name={movie.tmdbMovieName as string}
+                      posterPath={movie.tmdbPosterPath as string | undefined}
+                      onPress={() =>
+                        router.push({
+                          pathname: '/movie/[id]',
+                          params: { id: String(movie.tmdbMovieId) },
+                        })
+                      }
+                    />
+                  ))}
+                </View>
+              </View>
             ) : null}
+          </>
+        ) : null}
+
+        {tab === 'later' && hasItems ? (
+          <>
+            {showSeries && laterShowsAll.length > 0 ? (
+              <TouchableOpacity
+                style={[styles.bulkBtn, movingLater != null && styles.bulkBtnDisabled]}
+                onPress={moveLaterSeriesToWatching}
+                disabled={movingLater != null}
+                accessibilityRole="button"
+                accessibilityLabel="Move all series to To watch"
+              >
+                {movingLater === 'series' ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Ionicons name="play-forward-outline" size={18} color="#fff" />
+                )}
+                <Text style={styles.bulkBtnText}>
+                  {movingLater === 'series'
+                    ? 'Moving series…'
+                    : `Start watching all series (${laterShowsAll.length})`}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            {showMovies && laterMoviesAll.length > 0 ? (
+              <TouchableOpacity
+                style={[styles.bulkBtn, movingLater != null && styles.bulkBtnDisabled]}
+                onPress={moveLaterMoviesToWatching}
+                disabled={movingLater != null}
+                accessibilityRole="button"
+                accessibilityLabel="Move all movies to To watch"
+              >
+                {movingLater === 'movies' ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Ionicons name="play-forward-outline" size={18} color="#fff" />
+                )}
+                <Text style={styles.bulkBtnText}>
+                  {movingLater === 'movies'
+                    ? 'Moving movies…'
+                    : `Start watching all movies (${laterMoviesAll.length})`}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+            <View style={[styles.grid, styles.watchedGrid]}>
+              {showSeries
+                ? laterShows.map(show => {
+                    const tmdbId = show.tmdbShowId as number;
+                    const watched = watchedByShow.get(tmdbId) ?? 0;
+                    const total = Number(show.totalEpisodes);
+                    return (
+                      <ShowGridCard
+                        key={show.id}
+                        name={show.tmdbShowName as string}
+                        posterPath={show.tmdbPosterPath as string | undefined}
+                        watchedCount={watched}
+                        totalEpisodes={Number.isFinite(total) && total > 0 ? total : undefined}
+                        onPress={() => router.push(`/show/${tmdbId}`)}
+                      />
+                    );
+                  })
+                : null}
+              {showMovies
+                ? laterMovies.map(movie => (
+                    <ShowGridCard
+                      key={movie.id}
+                      name={movie.tmdbMovieName as string}
+                      posterPath={movie.tmdbPosterPath as string | undefined}
+                      onPress={() =>
+                        router.push({
+                          pathname: '/movie/[id]',
+                          params: { id: String(movie.tmdbMovieId) },
+                        })
+                      }
+                    />
+                  ))
+                : null}
+            </View>
+          </>
+        ) : null}
+
+        {tab === 'watched' && hasItems ? (
+          <View style={[styles.grid, styles.watchedGrid]}>
+            {showSeries
+              ? watchedShows.map(show => {
+                  const tmdbId = show.tmdbShowId as number;
+                  const watched = watchedByShow.get(tmdbId) ?? 0;
+                  const total = Number(show.totalEpisodes);
+                  return (
+                    <ShowGridCard
+                      key={show.id}
+                      name={show.tmdbShowName as string}
+                      posterPath={show.tmdbPosterPath as string | undefined}
+                      watchedCount={watched}
+                      totalEpisodes={Number.isFinite(total) && total > 0 ? total : undefined}
+                      onPress={() => router.push(`/show/${tmdbId}`)}
+                    />
+                  );
+                })
+              : null}
+            {showMovies
+              ? watchedMovies.map(movie => (
+                  <ShowGridCard
+                    key={movie.id}
+                    name={movie.tmdbMovieName as string}
+                    posterPath={movie.tmdbPosterPath as string | undefined}
+                    watchedCount={1}
+                    totalEpisodes={1}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/movie/[id]',
+                        params: { id: String(movie.tmdbMovieId) },
+                      })
+                    }
+                  />
+                ))
+              : null}
           </View>
-          {historyTotal === 0 ? (
-            <Text style={styles.historyEmpty}>No episodes watched yet</Text>
-          ) : historyMatchCount === 0 ? (
-            <Text style={styles.historyEmpty}>No history matches this filter</Text>
-          ) : (
-            historyDays.map(day => (
+        ) : null}
+
+        {tab === 'history' && hasItems ? (
+          <View style={styles.historyList}>
+            {historySessionsByDay.map(day => (
               <View key={day.key} style={styles.historyDay}>
-                <Text style={styles.historyDayLabel}>{day.label}</Text>
-                {day.entries.map(entry => {
-                  const poster = posterUrl(entry.posterPath, 'w185');
+                <View style={styles.historyDayHeader}>
+                  <Text style={styles.historyDayLabel}>{day.label}</Text>
+                  <Text style={styles.historyDayCount}>
+                    {(() => {
+                      const n = day.entries.length;
+                      const allMovies = day.entries.every(e => e.kind === 'movie');
+                      const allTv = day.entries.every(e => e.kind === 'tv');
+                      if (n === 1) return allMovies ? '1 film' : '1 ep';
+                      if (allMovies) return `${n} films`;
+                      if (allTv) return `${n} eps`;
+                      return `${n} items`;
+                    })()}
+                  </Text>
+                </View>
+                {day.sessions.map(session => {
+                  const poster = posterUrl(session.posterPath, 'w185');
+                  const epLabel = formatSessionEpisodes(session.episodes, session.kind);
                   return (
                     <TouchableOpacity
-                      key={entry.id}
+                      key={session.id}
                       style={styles.historyRow}
-                      onPress={() => router.push(`/show/${entry.tmdbShowId}`)}
+                      onPress={() =>
+                        session.kind === 'movie'
+                          ? router.push({
+                              pathname: '/movie/[id]',
+                              params: { id: String(session.tmdbId) },
+                            })
+                          : router.push(`/show/${session.tmdbId}`)
+                      }
                       accessibilityRole="button"
-                      accessibilityLabel={`Watched ${episodeCode(entry.seasonNumber, entry.episodeNumber)} of ${entry.showName}`}
+                      accessibilityLabel={`${session.title}, ${epLabel}`}
                     >
                       {poster ? (
                         <Image source={{ uri: poster }} style={styles.historyPoster} />
                       ) : (
                         <View style={[styles.historyPoster, styles.historyPosterFallback]}>
-                          <Text style={styles.historyPosterFallbackText}>TV</Text>
+                          <Text style={styles.historyPosterFallbackText}>
+                            {session.kind === 'movie' ? 'FILM' : 'TV'}
+                          </Text>
                         </View>
                       )}
                       <View style={styles.historyInfo}>
                         <Text style={styles.historyShow} numberOfLines={1}>
-                          {entry.showName}
+                          {session.title}
                         </Text>
-                        <Text style={styles.historyEp}>
-                          {episodeCode(entry.seasonNumber, entry.episodeNumber)}
+                        <Text style={styles.historyEp} numberOfLines={1}>
+                          {epLabel}
                         </Text>
                       </View>
-                      <Text style={styles.historyTime}>{formatWatchTime(entry.watchedAt)}</Text>
+                      <Text style={styles.historyTime}>
+                        {formatWatchTime(session.watchedAt)}
+                      </Text>
                     </TouchableOpacity>
                   );
                 })}
               </View>
-            ))
-          )}
-          {historyMatchCount > historyLimit ? (
-            <TouchableOpacity
-              style={styles.historyMore}
-              onPress={() => setHistoryLimit(n => n + HISTORY_PAGE)}
-              accessibilityRole="button"
-              accessibilityLabel="Show more watch history"
-            >
-              <Text style={styles.historyMoreText}>Show more</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-        ) : null}
-
-        <TouchableOpacity
-          style={styles.importBtn}
-          onPress={() => router.push('/import' as never)}
-        >
-          <Text style={styles.importBtnIcon}>📥</Text>
-          <View style={styles.importBtnText}>
-            <Text style={styles.importBtnTitle}>Import from TV Time</Text>
-            <Text style={styles.importBtnSub}>
-              Pick 4 files from your TV Time GDPR folder
-            </Text>
-          </View>
-          <Text style={styles.importBtnArrow}>›</Text>
-        </TouchableOpacity>
-
-        {showMovies && filteredMovies.length > 0 ? (
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View style={[styles.sectionDot, { backgroundColor: theme.gold }]} />
-              <Text style={styles.sectionTitle}>Movies</Text>
-              <Text style={styles.sectionCount}>{filteredMovies.length}</Text>
-            </View>
-            {filteredMovies.map(movie => (
-              <TouchableOpacity
-                key={movie.id}
-                style={styles.showItem}
-                onPress={() => router.push({ pathname: '/movie/[id]', params: { id: String(movie.tmdbMovieId) } })}
-              >
-                <Text style={styles.showName} numberOfLines={1}>
-                  {movie.tmdbMovieName as string}
-                </Text>
-                <Text style={styles.movieStatusHint}>
-                  {movie.status === 'finished'
-                    ? 'Watched'
-                    : movie.status === 'watchLater'
-                      ? 'Later'
-                      : 'To watch'}
-                </Text>
-                <Text style={styles.showChevron}>›</Text>
-              </TouchableOpacity>
             ))}
+            {historyMatchCount > historyLimit ? (
+              <TouchableOpacity
+                style={styles.historyMore}
+                onPress={() => setHistoryLimit(n => n + HISTORY_PAGE)}
+                accessibilityRole="button"
+                accessibilityLabel="Show more history"
+              >
+                <Text style={styles.historyMoreText}>
+                  Show more · {historyMatchCount - historyLimit} left
+                </Text>
+              </TouchableOpacity>
+            ) : historyMatchCount > HISTORY_PAGE ? (
+              <Text style={styles.historyEnd}>
+                All {historyMatchCount.toLocaleString()} checks loaded
+              </Text>
+            ) : null}
           </View>
         ) : null}
-
-        {showSeries
-          ? STATUS_CONFIG.map(({ key, label, color }) => {
-          const list = filteredGrouped[key] ?? [];
-          if (list.length === 0) return null;
-          return (
-            <View key={key} style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <View style={[styles.sectionDot, { backgroundColor: color }]} />
-                <Text style={styles.sectionTitle}>
-                  {label}
-                </Text>
-                <Text style={styles.sectionCount}>{list.length}</Text>
-              </View>
-              {list.map(show => (
-                <TouchableOpacity
-                  key={show.id}
-                  style={styles.showItem}
-                  onPress={() => router.push(`/show/${show.tmdbShowId}`)}
-                >
-                  <Text style={styles.showName} numberOfLines={1}>
-                    {show.tmdbShowName as string}
-                  </Text>
-                  <Text style={styles.showChevron}>›</Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-          );
-        })
-          : null}
       </CollapsibleScrollView>
     </TabScreen>
   );
@@ -364,189 +740,249 @@ const styles = StyleSheet.create({
   content: {
     paddingBottom: theme.tabBarClearance + 16,
   },
-  header: {
+  topBar: {
+    flexDirection: 'row',
     alignItems: 'center',
-    paddingTop: 32,
-    paddingBottom: 28,
-    paddingHorizontal: 24,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+    gap: 12,
+  },
+  identity: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    minWidth: 0,
+    gap: 12,
   },
   avatar: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: theme.accent,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 14,
   },
   avatarText: {
     color: theme.text,
-    fontSize: 34,
+    fontSize: 18,
     fontWeight: '700',
+  },
+  identityText: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
   },
   email: {
     color: theme.text,
-    fontSize: 16,
-    marginBottom: 18,
-    maxWidth: '80%',
+    fontSize: 15,
+    fontWeight: '600',
   },
   signOutBtn: {
-    paddingHorizontal: 24,
+    paddingHorizontal: 12,
     paddingVertical: 8,
-    borderRadius: 20,
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: theme.accent,
+    borderColor: theme.border,
   },
   signOutText: {
-    color: theme.accent,
-    fontSize: 14,
+    color: theme.muted,
+    fontSize: 13,
     fontWeight: '500',
   },
   statsBlock: {
-    position: 'relative',
-    overflow: 'hidden',
     marginHorizontal: 16,
-    marginTop: 12,
+    marginBottom: 12,
+    paddingVertical: 16,
+    paddingHorizontal: 14,
+    backgroundColor: theme.elevated,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: theme.border,
+  },
+  statsKicker: {
+    color: theme.accent,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.1,
+    textTransform: 'uppercase',
+    textAlign: 'center',
     marginBottom: 4,
-    paddingTop: 12,
-    paddingBottom: 10,
-    paddingHorizontal: 12,
+  },
+  statsHero: {
+    color: theme.accent,
+    fontSize: 32,
+    fontWeight: '700',
+    letterSpacing: -0.8,
+    textAlign: 'center',
+    marginBottom: 14,
+  },
+  statsRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    justifyContent: 'space-between',
+    gap: 4,
+  },
+  statCell: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 4,
+    minWidth: 0,
+  },
+  statValue: {
+    color: theme.text,
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 2,
+  },
+  statLabel: {
+    color: theme.muted,
+    fontSize: 11,
+    fontWeight: '500',
+  },
+  statDivider: {
+    width: StyleSheet.hairlineWidth,
+    backgroundColor: theme.border,
+    marginVertical: 4,
+  },
+  statsBreakdown: {
+    color: theme.faint,
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 12,
+  },
+  importBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     backgroundColor: theme.elevated,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: theme.border,
+    gap: 12,
   },
-  statsWash: {
-    position: 'absolute',
-    top: -36,
-    left: -20,
-    right: -20,
-    height: 100,
-    backgroundColor: 'rgba(232, 93, 76, 0.08)',
-  },
-  statsKicker: {
-    color: theme.accent,
-    fontSize: 10,
-    fontWeight: '700',
-    letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    textAlign: 'center',
-    marginBottom: 2,
-  },
-  statsHeroValue: {
-    color: theme.accent,
-    fontSize: 28,
-    fontWeight: '700',
-    letterSpacing: -0.8,
-    textAlign: 'center',
-  },
-  statsLine: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    alignItems: 'center',
-    gap: 10,
-    marginTop: 12,
-    paddingHorizontal: 8,
-    rowGap: 8,
-  },
-  statsChip: {
-    color: theme.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '500',
-  },
-  statsSep: {
-    color: theme.faint,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  statusGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 10,
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
-  },
-  statusCard: {
-    flex: 1,
-    minWidth: '45%',
-    backgroundColor: theme.elevated,
+  importIconWrap: {
+    width: 36,
+    height: 36,
     borderRadius: 10,
-    padding: 14,
-    borderLeftWidth: 3,
+    backgroundColor: 'rgba(232, 93, 76, 0.12)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  statusCount: {
-    fontSize: 24,
-    fontWeight: '700',
-    marginBottom: 2,
+  importBtnText: {
+    flex: 1,
   },
-  statusLabel: {
+  importBtnTitle: {
+    color: theme.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  importBtnSub: {
     color: theme.muted,
     fontSize: 12,
+    marginTop: 1,
   },
-  statusCardActive: {
-    backgroundColor: '#2e1f1c',
+  tabsRow: {
+    paddingHorizontal: 8,
+    marginTop: 4,
   },
-  filterEmpty: {
-    paddingHorizontal: 24,
-    paddingVertical: 28,
+  bulkBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginBottom: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: theme.accent,
+  },
+  bulkBtnDisabled: {
+    opacity: 0.7,
+  },
+  bulkBtnText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  empty: {
+    paddingHorizontal: 28,
+    paddingVertical: 36,
     alignItems: 'center',
   },
-  filterEmptyTitle: {
+  emptyTitle: {
     color: theme.text,
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '700',
     marginBottom: 6,
   },
-  filterEmptySub: {
+  emptySub: {
     color: theme.muted,
     fontSize: 14,
     textAlign: 'center',
+    lineHeight: 20,
+  },
+  grid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'flex-start',
+    gap: 10,
+    paddingHorizontal: 16,
+  },
+  watchedGrid: {
+    paddingTop: 12,
   },
   section: {
-    marginTop: 24,
-    paddingHorizontal: 16,
+    marginBottom: 8,
   },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 10,
-  },
-  sectionDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 8,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 18,
+    paddingBottom: 8,
   },
   sectionTitle: {
     color: theme.muted,
     fontSize: 11,
     fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-    flex: 1,
+    letterSpacing: 1.1,
   },
   sectionCount: {
-    color: theme.muted,
+    color: theme.faint,
     fontSize: 12,
+    fontWeight: '600',
   },
-  historyEmpty: {
-    color: theme.muted,
-    fontSize: 14,
-    paddingVertical: 8,
+  historyList: {
+    paddingHorizontal: 16,
+    paddingTop: 4,
   },
   historyDay: {
-    marginBottom: 16,
+    marginBottom: 18,
+  },
+  historyDayHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+    paddingBottom: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.border,
   },
   historyDayLabel: {
-    color: theme.muted,
-    fontSize: 12,
+    color: theme.text,
+    fontSize: 13,
     fontWeight: '700',
-    marginBottom: 6,
+  },
+  historyDayCount: {
+    color: theme.faint,
+    fontSize: 12,
   },
   historyRow: {
     flexDirection: 'row',
@@ -566,7 +1002,7 @@ const styles = StyleSheet.create({
   },
   historyPosterFallbackText: {
     color: theme.faint,
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
   },
   historyInfo: {
@@ -575,7 +1011,7 @@ const styles = StyleSheet.create({
   },
   historyShow: {
     color: theme.text,
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
   },
   historyEp: {
@@ -589,8 +1025,7 @@ const styles = StyleSheet.create({
   historyMore: {
     alignSelf: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 10,
-    marginTop: 4,
+    paddingVertical: 12,
     marginBottom: 8,
   },
   historyMoreText: {
@@ -598,57 +1033,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
-  showItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 11,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
-  },
-  showName: {
-    color: theme.text,
-    fontSize: 15,
-    flex: 1,
-  },
-  movieStatusHint: {
-    color: theme.gold,
+  historyEnd: {
+    color: theme.faint,
     fontSize: 12,
-    marginRight: 8,
-  },
-  showChevron: {
-    color: theme.muted,
-    fontSize: 20,
-  },
-  importBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginHorizontal: 16,
-    marginTop: 20,
-    padding: 16,
-    backgroundColor: theme.elevated,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: theme.border,
-    gap: 12,
-  },
-  importBtnIcon: {
-    fontSize: 24,
-  },
-  importBtnText: {
-    flex: 1,
-  },
-  importBtnTitle: {
-    color: theme.text,
-    fontSize: 15,
-    fontWeight: '600',
-  },
-  importBtnSub: {
-    color: theme.muted,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  importBtnArrow: {
-    color: theme.muted,
-    fontSize: 20,
+    textAlign: 'center',
+    marginBottom: 12,
   },
 });

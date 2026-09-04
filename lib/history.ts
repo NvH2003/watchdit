@@ -1,7 +1,8 @@
 export type WatchHistoryEntry = {
   id: string;
-  tmdbShowId: number;
-  showName: string;
+  kind: 'tv' | 'movie';
+  tmdbId: number;
+  title: string;
   posterPath: string | null;
   seasonNumber: number;
   episodeNumber: number;
@@ -26,6 +27,16 @@ type ShowRow = {
   tmdbShowId?: unknown;
   tmdbShowName?: unknown;
   tmdbPosterPath?: unknown;
+};
+
+type MovieRow = {
+  id: string;
+  tmdbMovieId?: unknown;
+  tmdbMovieName?: unknown;
+  tmdbPosterPath?: unknown;
+  status?: unknown;
+  watchedAt?: unknown;
+  runtime?: unknown;
 };
 
 function dayKey(ms: number): string {
@@ -93,6 +104,37 @@ export function countValidWatches(watched: WatchedRow[]): number {
   return n;
 }
 
+function sortEntries(entries: WatchHistoryEntry[]): WatchHistoryEntry[] {
+  return [...entries].sort((a, b) => {
+    if (b.watchedAt !== a.watchedAt) return b.watchedAt - a.watchedAt;
+    const name = a.title.localeCompare(b.title);
+    if (name !== 0) return name;
+    if (a.kind !== b.kind) return a.kind === 'tv' ? -1 : 1;
+    if (a.seasonNumber !== b.seasonNumber) return a.seasonNumber - b.seasonNumber;
+    return a.episodeNumber - b.episodeNumber;
+  });
+}
+
+function groupEntriesByDay(
+  matched: WatchHistoryEntry[],
+  limit: number
+): { days: WatchHistoryDay[]; matchedTotal: number } {
+  const sliced = matched.slice(0, Math.max(0, limit));
+  const days: WatchHistoryDay[] = [];
+  const byKey = new Map<string, WatchHistoryDay>();
+  for (const entry of sliced) {
+    const key = dayKey(entry.watchedAt);
+    let day = byKey.get(key);
+    if (!day) {
+      day = { key, label: historyDayLabel(key), entries: [] };
+      byKey.set(key, day);
+      days.push(day);
+    }
+    day.entries.push(entry);
+  }
+  return { days, matchedTotal: matched.length };
+}
+
 export function buildWatchHistory(
   watched: WatchedRow[],
   shows: ShowRow[],
@@ -114,8 +156,9 @@ export function buildWatchHistory(
     const show = showById.get(row.tmdbShowId);
     entries.push({
       id: row.id,
-      tmdbShowId: row.tmdbShowId,
-      showName: (show?.tmdbShowName as string | undefined) || 'Unknown show',
+      kind: 'tv',
+      tmdbId: row.tmdbShowId,
+      title: (show?.tmdbShowName as string | undefined) || 'Unknown show',
       posterPath: (show?.tmdbPosterPath as string | undefined) || null,
       seasonNumber: Number(row.seasonNumber) || 0,
       episodeNumber: Number(row.episodeNumber) || 0,
@@ -123,30 +166,132 @@ export function buildWatchHistory(
     });
   }
 
-  entries.sort((a, b) => {
-    if (b.watchedAt !== a.watchedAt) return b.watchedAt - a.watchedAt;
-    const name = a.showName.localeCompare(b.showName);
-    if (name !== 0) return name;
-    if (a.seasonNumber !== b.seasonNumber) return a.seasonNumber - b.seasonNumber;
-    return a.episodeNumber - b.episodeNumber;
-  });
+  const sorted = sortEntries(entries);
   const q = query.trim().toLowerCase();
   const matched = q
-    ? entries.filter(entry => entry.showName.toLowerCase().includes(q))
-    : entries;
-  const sliced = matched.slice(0, Math.max(0, limit));
+    ? sorted.filter(entry => entry.title.toLowerCase().includes(q))
+    : sorted;
+  return groupEntriesByDay(matched, limit);
+}
 
-  const days: WatchHistoryDay[] = [];
-  const byKey = new Map<string, WatchHistoryDay>();
-  for (const entry of sliced) {
-    const key = dayKey(entry.watchedAt);
-    let day = byKey.get(key);
-    if (!day) {
-      day = { key, label: historyDayLabel(key), entries: [] };
-      byKey.set(key, day);
-      days.push(day);
-    }
-    day.entries.push(entry);
+/** Finished movies with a watchedAt, same day grouping as series history. */
+export function buildMovieWatchHistory(
+  movies: MovieRow[],
+  limit: number,
+  query = ''
+): { days: WatchHistoryDay[]; matchedTotal: number } {
+  const entries: WatchHistoryEntry[] = [];
+  for (const movie of movies) {
+    if (movie.status !== 'finished') continue;
+    const tmdbId = Number(movie.tmdbMovieId);
+    if (!Number.isFinite(tmdbId)) continue;
+    const t = watchedAtMs(movie.watchedAt);
+    if (t == null) continue;
+    entries.push({
+      id: movie.id,
+      kind: 'movie',
+      tmdbId,
+      title: (movie.tmdbMovieName as string | undefined) || 'Unknown movie',
+      posterPath: (movie.tmdbPosterPath as string | undefined) || null,
+      seasonNumber: 0,
+      episodeNumber: 0,
+      watchedAt: t,
+    });
   }
-  return { days, matchedTotal: matched.length };
+
+  const sorted = sortEntries(entries);
+  const q = query.trim().toLowerCase();
+  const matched = q
+    ? sorted.filter(entry => entry.title.toLowerCase().includes(q))
+    : sorted;
+  return groupEntriesByDay(matched, limit);
+}
+
+/** Merge series + movie history into one chronological timeline. */
+export function buildCombinedWatchHistory(
+  watched: WatchedRow[],
+  shows: ShowRow[],
+  movies: MovieRow[],
+  limit: number,
+  query = ''
+): { days: WatchHistoryDay[]; matchedTotal: number } {
+  const tv = buildWatchHistory(watched, shows, Number.MAX_SAFE_INTEGER, query);
+  const film = buildMovieWatchHistory(movies, Number.MAX_SAFE_INTEGER, query);
+  const all = sortEntries([
+    ...tv.days.flatMap(d => d.entries),
+    ...film.days.flatMap(d => d.entries),
+  ]);
+  return groupEntriesByDay(all, limit);
+}
+
+export type WatchHistorySession = {
+  id: string;
+  kind: 'tv' | 'movie';
+  tmdbId: number;
+  title: string;
+  posterPath: string | null;
+  watchedAt: number;
+  episodes: { season: number; episode: number }[];
+};
+
+/** Collapse consecutive checks of the same show (within a day list) into one row. */
+export function collapseHistorySessions(entries: WatchHistoryEntry[]): WatchHistorySession[] {
+  const sessions: WatchHistorySession[] = [];
+  for (const entry of entries) {
+    const last = sessions[sessions.length - 1];
+    if (
+      last &&
+      last.kind === entry.kind &&
+      last.tmdbId === entry.tmdbId &&
+      entry.kind === 'tv'
+    ) {
+      last.episodes.push({
+        season: entry.seasonNumber,
+        episode: entry.episodeNumber,
+      });
+      continue;
+    }
+    sessions.push({
+      id: entry.id,
+      kind: entry.kind,
+      tmdbId: entry.tmdbId,
+      title: entry.title,
+      posterPath: entry.posterPath,
+      watchedAt: entry.watchedAt,
+      episodes:
+        entry.kind === 'tv'
+          ? [{ season: entry.seasonNumber, episode: entry.episodeNumber }]
+          : [],
+    });
+  }
+  return sessions;
+}
+
+/** Compact label: "S02 | E04", range, or "Movie". */
+export function formatSessionEpisodes(
+  episodes: { season: number; episode: number }[],
+  kind: 'tv' | 'movie' = 'tv'
+): string {
+  if (kind === 'movie') return 'Movie';
+  if (episodes.length === 0) return '';
+  const sorted = [...episodes].sort((a, b) =>
+    a.season !== b.season ? a.season - b.season : a.episode - b.episode
+  );
+  if (sorted.length === 1) {
+    return episodeCode(sorted[0].season, sorted[0].episode);
+  }
+
+  const sameSeason = sorted.every(e => e.season === sorted[0].season);
+  const consecutive =
+    sameSeason &&
+    sorted.every((e, i) => i === 0 || e.episode === sorted[i - 1].episode + 1);
+
+  if (consecutive) {
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    return `${sorted.length} ep · S${String(first.season).padStart(2, '0')} | E${String(first.episode).padStart(2, '0')}–E${String(last.episode).padStart(2, '0')}`;
+  }
+
+  const first = sorted[0];
+  return `${sorted.length} episodes · ${episodeCode(first.season, first.episode)}+`;
 }

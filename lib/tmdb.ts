@@ -57,6 +57,13 @@ export interface TmdbSeason {
   episodes?: TmdbEpisode[];
 }
 
+export interface TmdbCollectionRef {
+  id: number;
+  name: string;
+  poster_path: string | null;
+  backdrop_path: string | null;
+}
+
 export interface TmdbMovie {
   id: number;
   title: string;
@@ -68,6 +75,7 @@ export interface TmdbMovie {
   status?: string;
   original_language?: string;
   original_title?: string;
+  belongs_to_collection?: TmdbCollectionRef | null;
 }
 
 export type MediaKind = 'tv' | 'movie';

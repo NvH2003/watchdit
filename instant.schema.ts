@@ -48,6 +48,11 @@ const _schema = i.schema({
       tmdbReleaseDate: i.string().optional(),
       runtime: i.number().optional(),
       ownerMovieKey: i.string().unique().indexed().optional(),
+      /** TMDB collection id when the movie belongs to a franchise (Bond, Potter, …). */
+      tmdbCollectionId: i.number().indexed().optional(),
+      tmdbCollectionName: i.string().optional(),
+      /** Set after we looked up collection info (even if the movie has none). */
+      collectionSyncedAt: i.date().optional(),
     }),
     credentials: i.entity({
       email: i.string().unique().indexed(),

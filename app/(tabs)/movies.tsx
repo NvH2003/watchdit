@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,12 @@ import MovieRow from '@/components/MovieRow';
 import ShowGridCard from '@/components/ShowGridCard';
 import { hasAired } from '@/lib/progress';
 import { theme } from '@/constants/theme';
-import { uniqueByTmdbMovieId } from '@/lib/userMovies';
+import {
+  uniqueByTmdbMovieId,
+  ALL_COLLECTIONS,
+  buildCollectionFilterOptions,
+  collectionFilterKey,
+} from '@/lib/userMovies';
 import { upcomingBucket, UpcomingBucket, sortByAirDate, sortTime } from '@/lib/watchlist';
 import { matchesQuery } from '@/components/SearchField';
 import FilterToolbar, { FilterToggle } from '@/components/ListFilter';
@@ -21,6 +26,13 @@ import TabScreen from '@/components/TabScreen';
 import { CollapsibleScrollView } from '@/components/TabBarCollapse';
 
 type TabKey = 'watchlist' | 'upcoming' | 'watched';
+
+function releaseTime(movie: { tmdbReleaseDate?: unknown }): number {
+  const raw = movie.tmdbReleaseDate as string | undefined;
+  if (!raw) return Number.POSITIVE_INFINITY;
+  const t = new Date(raw).getTime();
+  return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+}
 
 const UPCOMING_SECTION_META: { key: UpcomingBucket; title: string }[] = [
   { key: 'today', title: 'Today' },
@@ -37,6 +49,7 @@ export default function MoviesScreen() {
   const [isGrid, setIsGrid] = useState(false);
   const [query, setQuery] = useState('');
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [collectionFilter, setCollectionFilter] = useState(ALL_COLLECTIONS);
 
   const { user } = db.useAuth();
   const { isLoading, data } = db.useQuery(
@@ -45,6 +58,7 @@ export default function MoviesScreen() {
 
   const movies = uniqueByTmdbMovieId(data?.userMovies ?? []);
   const queryReady = !user || (!isLoading && data != null);
+  const canFilterCollection = activeTab === 'watchlist' || activeTab === 'watched';
 
   const toWatch = movies.filter(
     m => m.status === 'watching' && hasAired(m.tmdbReleaseDate as string | undefined)
@@ -59,6 +73,26 @@ export default function MoviesScreen() {
         sortTime(b, new Date((b.watchedAt as string | undefined) ?? 0).getTime() || null) -
         sortTime(a, new Date((a.watchedAt as string | undefined) ?? 0).getTime() || null)
     );
+
+  const collectionSource = useMemo(
+    () => (activeTab === 'watched' ? watched : toWatch),
+    [activeTab, watched, toWatch]
+  );
+  const collectionOptions = useMemo(
+    () => buildCollectionFilterOptions(canFilterCollection ? collectionSource : []),
+    [canFilterCollection, collectionSource]
+  );
+  const showCollectionFilter = canFilterCollection && collectionOptions.length > 1;
+
+  useEffect(() => {
+    if (!showCollectionFilter) {
+      if (collectionFilter !== ALL_COLLECTIONS) setCollectionFilter(ALL_COLLECTIONS);
+      return;
+    }
+    if (!collectionOptions.some(o => o.key === collectionFilter)) {
+      setCollectionFilter(ALL_COLLECTIONS);
+    }
+  }, [showCollectionFilter, collectionOptions, collectionFilter]);
 
   const upcomingSections = useMemo(() => {
     const airOf = (movie: (typeof movies)[0]) =>
@@ -163,9 +197,16 @@ export default function MoviesScreen() {
 
   const list =
     activeTab === 'watchlist' ? toWatch : activeTab === 'watched' ? watched : [];
-  const filteredList = list.filter(movie =>
-    matchesQuery(movie.tmdbMovieName as string, query)
-  );
+  const filteredList = useMemo(() => {
+    let rows = list.filter(movie => matchesQuery(movie.tmdbMovieName as string, query));
+    if (canFilterCollection && collectionFilter !== ALL_COLLECTIONS) {
+      rows = rows.filter(movie => collectionFilterKey(movie) === collectionFilter);
+    }
+    if (canFilterCollection && collectionFilter !== ALL_COLLECTIONS) {
+      rows = [...rows].sort((a, b) => releaseTime(a) - releaseTime(b));
+    }
+    return rows;
+  }, [list, query, canFilterCollection, collectionFilter]);
   const filteredUpcomingSections = useMemo(
     () =>
       upcomingSections
@@ -197,10 +238,13 @@ export default function MoviesScreen() {
           value={activeTab}
           onChange={setActiveTab}
         />
-        {queryReady && movies.length > 0 ? (
+        {queryReady && movies.length > 0 && (canFilterCollection || activeTab === 'upcoming') ? (
           <FilterToggle
             open={filtersOpen}
-            active={query.trim().length > 0}
+            active={
+              query.trim().length > 0 ||
+              (showCollectionFilter && collectionFilter !== ALL_COLLECTIONS)
+            }
             onPress={() => setFiltersOpen(open => !open)}
           />
         ) : null}
@@ -213,7 +257,26 @@ export default function MoviesScreen() {
         </TouchableOpacity>
       </View>
 
-      {queryReady && movies.length > 0 && filtersOpen ? (
+      {queryReady && movies.length > 0 && filtersOpen && canFilterCollection ? (
+        <FilterToolbar
+          query={query}
+          onQueryChange={setQuery}
+          placeholder="Search by name"
+          menus={
+            showCollectionFilter
+              ? [
+                  {
+                    value: collectionFilter,
+                    onChange: setCollectionFilter,
+                    options: collectionOptions,
+                    placeholder: 'All collections',
+                    searchPlaceholder: 'Search collections',
+                  },
+                ]
+              : []
+          }
+        />
+      ) : queryReady && movies.length > 0 && filtersOpen ? (
         <FilterToolbar
           query={query}
           onQueryChange={setQuery}
@@ -364,7 +427,8 @@ const styles = StyleSheet.create({
   gridWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+    justifyContent: 'flex-start',
     paddingHorizontal: 16,
-    gap: 12,
+    gap: 10,
   },
 });

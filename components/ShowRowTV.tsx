@@ -12,7 +12,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
-import { posterUrl, stillUrl, formatAirsLabel } from '@/lib/tmdb';
+import { posterUrl, stillUrl, formatAirsLabel, formatRuntime } from '@/lib/tmdb';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
 
@@ -28,6 +28,9 @@ interface ShowRowTVProps {
   nextEpisodeName?: string | null;
   nextEpisodeAirDate?: string | null;
   nextEpisodeStillPath?: string | null;
+  nextEpisodeRuntime?: number | null;
+  /** Fallback when next episode runtime isn't stored yet (show average). */
+  episodeRuntime?: number | null;
   remainingCount?: number;
   canMark?: boolean;
   onShowPress: () => void;
@@ -105,6 +108,8 @@ export default function ShowRowTV({
   nextEpisodeName,
   nextEpisodeAirDate,
   nextEpisodeStillPath,
+  nextEpisodeRuntime,
+  episodeRuntime,
   remainingCount,
   canMark = true,
   onShowPress,
@@ -124,6 +129,7 @@ export default function ShowRowTV({
   const epCode = `S${String(season).padStart(2, '0')} | E${String(episode).padStart(2, '0')}`;
   const remaining = remainingCount ?? 0;
   const airsLabel = formatAirsLabel(nextEpisodeAirDate);
+  const runtimeLabel = formatRuntime(nextEpisodeRuntime) ?? formatRuntime(episodeRuntime);
 
   useEffect(() => {
     setMarking(false);
@@ -179,8 +185,11 @@ export default function ShowRowTV({
           )}
         </View>
 
-        {nextEpisodeName ? (
-          <Text style={styles.epName} numberOfLines={1}>{nextEpisodeName}</Text>
+        {nextEpisodeName || runtimeLabel ? (
+          <Text style={styles.epName} numberOfLines={1}>
+            {nextEpisodeName || 'Episode'}
+            {runtimeLabel ? ` · ${runtimeLabel}` : ''}
+          </Text>
         ) : null}
         {airsLabel ? (
           <Text style={styles.airsLabel}>{airsLabel}</Text>

@@ -9,6 +9,7 @@ import {
   Platform,
   ActivityIndicator,
   ScrollView,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import db from '@/lib/db';
@@ -95,7 +96,12 @@ export default function AuthScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.inner}>
-            <Text style={styles.logo}>📺</Text>
+            <Image
+              source={require('../assets/images/logo.png')}
+              style={styles.logo}
+              resizeMode="contain"
+              accessibilityLabel="Watch'd It"
+            />
             <Text style={styles.title}>Watch'd It</Text>
             <Text style={styles.subtitle}>
               {step === 'password'
@@ -225,20 +231,21 @@ const styles = StyleSheet.create({
     paddingVertical: 32,
   },
   logo: {
-    fontSize: 72,
+    width: 112,
+    height: 112,
     marginBottom: 16,
   },
   title: {
-    fontSize: 34,
+    fontSize: 32,
     fontWeight: '700',
     color: theme.text,
-    marginBottom: 10,
+    marginBottom: 8,
     letterSpacing: 0.5,
   },
   subtitle: {
     fontSize: 15,
     color: theme.muted,
-    marginBottom: 40,
+    marginBottom: 32,
     textAlign: 'center',
     lineHeight: 22,
   },

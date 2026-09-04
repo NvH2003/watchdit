@@ -12,7 +12,8 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { tmdb, posterUrl, TmdbShow, TmdbMovie, SearchHit, showToSearchHit, movieToSearchHit } from '@/lib/tmdb';
 import db from '@/lib/db';
 import { theme } from '@/constants/theme';
-import { hasAired } from '@/lib/progress';
+import { hasAired, findProgressFromTmdb, progressUpdates } from '@/lib/progress';
+import { averageEpisodeRuntime } from '@/lib/stats';
 import { createUserShowTx, uniqueByTmdbShowId } from '@/lib/userShows';
 import { createUserMovieTx, uniqueByTmdbMovieId } from '@/lib/userMovies';
 import FilterToolbar from '@/components/ListFilter';
@@ -160,35 +161,50 @@ export default function DiscoverScreen() {
     }
     pendingAdds.current.add(key);
     setPendingKeys(keys => (keys.includes(key) ? keys : [...keys, key]));
-    try {
-      const details = await tmdb.getShow(show.id);
-      const lang = details.original_language || undefined;
-      const firstSeason = details.number_of_seasons && details.number_of_seasons > 0
-        ? await tmdb.getSeason(show.id, 1, lang)
-        : null;
-      const firstEp = firstSeason?.episodes?.[0] ?? null;
-      const firstAir = firstEp?.air_date ?? '';
 
-      const { tx } = createUserShowTx(user.id, {
-        tmdbShowId: show.id,
-        tmdbShowName: show.name,
-        tmdbPosterPath: show.poster_path ?? '',
-        status: hasAired(firstAir) ? 'watching' : 'upToDate',
-        addedAt: new Date().toISOString(),
-        lastTouchedAt: new Date().toISOString(),
-        tmdbOriginalLanguage: lang ?? '',
-        totalEpisodes: details.number_of_episodes ?? 0,
-        nextSeasonNum: firstEp ? firstEp.season_number : 1,
-        nextEpisodeNum: firstEp ? firstEp.episode_number : 1,
-        nextEpisodeName: firstEp?.name ?? '',
-        nextEpisodeAirDate: firstEp?.air_date ?? '',
-        nextEpisodeStillPath: firstEp?.still_path ?? '',
-      });
+    const now = new Date().toISOString();
+    const provisionalAir = show.first_air_date || '';
+    // Write immediately so To watch / Coming up update without waiting on TMDB.
+    const { entityId, tx } = createUserShowTx(user.id, {
+      tmdbShowId: show.id,
+      tmdbShowName: show.name,
+      tmdbPosterPath: show.poster_path ?? '',
+      status: hasAired(provisionalAir) ? 'watching' : 'upToDate',
+      addedAt: now,
+      lastTouchedAt: now,
+      nextSeasonNum: 1,
+      nextEpisodeNum: 1,
+      nextEpisodeName: '',
+      nextEpisodeAirDate: provisionalAir,
+      nextEpisodeStillPath: '',
+    });
+
+    try {
       await db.transact([tx]);
     } catch (e) {
       pendingAdds.current.delete(key);
       setPendingKeys(keys => keys.filter(k => k !== key));
       console.warn('Failed to add show', e);
+      return;
+    }
+
+    try {
+      const details = await tmdb.getShow(show.id);
+      const lang = details.original_language || undefined;
+      const progress = await findProgressFromTmdb(show.id, new Set(), 1);
+      const episodeRuntime = averageEpisodeRuntime(details.episode_run_time);
+      await db.transact([
+        db.tx.userShows[entityId].update({
+          ...progressUpdates(progress),
+          tmdbShowName: details.name || show.name,
+          tmdbPosterPath: details.poster_path ?? show.poster_path ?? '',
+          tmdbOriginalLanguage: lang ?? '',
+          totalEpisodes: progress.totalEpisodes ?? details.number_of_episodes ?? 0,
+          ...(episodeRuntime != null ? { episodeRuntime } : {}),
+        }),
+      ]);
+    } catch (e) {
+      console.warn('Failed to enrich added show', e);
     }
   }
 
@@ -200,24 +216,40 @@ export default function DiscoverScreen() {
     }
     pendingAdds.current.add(key);
     setPendingKeys(keys => (keys.includes(key) ? keys : [...keys, key]));
+
+    const now = new Date().toISOString();
+    const provisionalRelease = movie.release_date || '';
+    const { entityId, tx } = createUserMovieTx(user.id, {
+      tmdbMovieId: movie.id,
+      tmdbMovieName: movie.title,
+      tmdbPosterPath: movie.poster_path ?? '',
+      status: 'watching',
+      addedAt: now,
+      lastTouchedAt: now,
+      tmdbReleaseDate: provisionalRelease,
+    });
+
     try {
-      const details = await tmdb.getMovie(movie.id).catch(() => movie);
-      const release = details.release_date || movie.release_date || '';
-      const { tx } = createUserMovieTx(user.id, {
-        tmdbMovieId: movie.id,
-        tmdbMovieName: details.title || movie.title,
-        tmdbPosterPath: details.poster_path ?? movie.poster_path ?? '',
-        status: 'watching',
-        addedAt: new Date().toISOString(),
-        lastTouchedAt: new Date().toISOString(),
-        tmdbReleaseDate: release,
-        runtime: details.runtime ?? undefined,
-      });
       await db.transact([tx]);
     } catch (e) {
       pendingAdds.current.delete(key);
       setPendingKeys(keys => keys.filter(k => k !== key));
       console.warn('Failed to add movie', e);
+      return;
+    }
+
+    try {
+      const details = await tmdb.getMovie(movie.id);
+      await db.transact([
+        db.tx.userMovies[entityId].update({
+          tmdbMovieName: details.title || movie.title,
+          tmdbPosterPath: details.poster_path ?? movie.poster_path ?? '',
+          tmdbReleaseDate: details.release_date || provisionalRelease,
+          runtime: details.runtime ?? undefined,
+        }),
+      ]);
+    } catch (e) {
+      console.warn('Failed to enrich added movie', e);
     }
   }
 

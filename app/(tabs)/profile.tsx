@@ -18,6 +18,7 @@ import {
   episodeCode,
   formatWatchTime,
 } from '@/lib/history';
+import { computeWatchStats, formatDurationMinutes } from '@/lib/stats';
 import { matchesQuery } from '@/components/SearchField';
 import FilterToolbar from '@/components/ListFilter';
 import TabScreen from '@/components/TabScreen';
@@ -55,9 +56,12 @@ export default function ProfileScreen() {
 
   const shows = uniqueByTmdbShowId(data?.userShows ?? []);
   const movies = uniqueByTmdbMovieId(data?.userMovies ?? []);
-  const watchedMovies = movies.filter(m => m.status === 'finished').length;
   const watchedEpisodes = data?.watchedEpisodes ?? [];
   const historyTotal = countValidWatches(watchedEpisodes);
+  const stats = useMemo(
+    () => computeWatchStats(watchedEpisodes, shows, movies),
+    [watchedEpisodes, shows, movies]
+  );
   const { days: historyDays, matchedTotal: historyMatchCount } = useMemo(
     () => buildWatchHistory(watchedEpisodes, shows, historyLimit, query),
     [watchedEpisodes, shows, historyLimit, query]
@@ -119,10 +123,41 @@ export default function ProfileScreen() {
           <InstallApp />
         </View>
 
-        <View style={styles.statsRow}>
-          <StatBox label="Shows" value={shows.length} />
-          <StatBox label="Movies" value={movies.length} />
-          <StatBox label="Episodes Watched" value={watchedEpisodes.length} />
+        <View style={styles.statsBlock}>
+          <View style={styles.statsWash} pointerEvents="none" />
+          <Text style={styles.statsKicker}>Watch time</Text>
+          <Text style={styles.statsHeroValue}>
+            {formatDurationMinutes(stats.totalMinutes)}
+          </Text>
+
+          <View style={styles.statsLine}>
+            <Text style={styles.statsChip}>
+              {formatDurationMinutes(stats.episodeMinutes)} series
+            </Text>
+            <Text style={styles.statsSep}>·</Text>
+            <Text style={styles.statsChip}>
+              {formatDurationMinutes(stats.movieMinutes)} movies
+            </Text>
+            <Text style={styles.statsSep}>·</Text>
+            <Text style={styles.statsChip}>
+              {stats.episodeCount.toLocaleString()} ep
+            </Text>
+            <Text style={styles.statsSep}>·</Text>
+            <Text style={styles.statsChip}>
+              {stats.showCount.toLocaleString()} shows
+            </Text>
+            <Text style={styles.statsSep}>·</Text>
+            <Text style={styles.statsChip}>
+              {movies.length.toLocaleString()} films
+            </Text>
+            <Text style={styles.statsSep}>·</Text>
+            <Text style={styles.statsChip}>
+              {formatDurationMinutes(stats.thisWeekMinutes)} this week
+              {stats.thisWeekEpisodes > 0
+                ? ` (${stats.thisWeekEpisodes.toLocaleString()} ep)`
+                : ''}
+            </Text>
+          </View>
         </View>
 
         <View style={styles.statusGrid}>
@@ -325,15 +360,6 @@ export default function ProfileScreen() {
   );
 }
 
-function StatBox({ label, value }: { label: string; value: number }) {
-  return (
-    <View style={styles.statBox}>
-      <Text style={styles.statValue}>{value}</Text>
-      <Text style={styles.statLabel}>{label}</Text>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   content: {
     paddingBottom: theme.tabBarClearance + 16,
@@ -378,26 +404,64 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
   },
-  statsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingVertical: 24,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.border,
+  statsBlock: {
+    position: 'relative',
+    overflow: 'hidden',
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 4,
+    paddingTop: 12,
+    paddingBottom: 10,
+    paddingHorizontal: 12,
+    backgroundColor: theme.elevated,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.border,
   },
-  statBox: {
-    alignItems: 'center',
+  statsWash: {
+    position: 'absolute',
+    top: -36,
+    left: -20,
+    right: -20,
+    height: 100,
+    backgroundColor: 'rgba(232, 93, 76, 0.08)',
   },
-  statValue: {
-    color: theme.text,
-    fontSize: 30,
+  statsKicker: {
+    color: theme.accent,
+    fontSize: 10,
     fontWeight: '700',
-  },
-  statLabel: {
-    color: theme.muted,
-    fontSize: 12,
-    marginTop: 4,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
     textAlign: 'center',
+    marginBottom: 2,
+  },
+  statsHeroValue: {
+    color: theme.accent,
+    fontSize: 28,
+    fontWeight: '700',
+    letterSpacing: -0.8,
+    textAlign: 'center',
+  },
+  statsLine: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 12,
+    paddingHorizontal: 8,
+    rowGap: 8,
+  },
+  statsChip: {
+    color: theme.muted,
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '500',
+  },
+  statsSep: {
+    color: theme.faint,
+    fontSize: 14,
+    lineHeight: 20,
   },
   statusGrid: {
     flexDirection: 'row',

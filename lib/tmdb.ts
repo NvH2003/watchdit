@@ -31,6 +31,8 @@ export interface TmdbShow {
   status?: string;
   original_language?: string;
   original_name?: string;
+  /** Typical episode lengths in minutes. */
+  episode_run_time?: number[];
   seasons?: TmdbSeasonSummary[];
 }
 
@@ -42,6 +44,8 @@ export interface TmdbEpisode {
   overview: string;
   air_date: string;
   still_path: string | null;
+  /** Episode length in minutes when TMDB has it. */
+  runtime?: number | null;
 }
 
 export interface TmdbSeason {
@@ -132,6 +136,17 @@ export const tmdb = {
       language ? { language } : {}
     ),
 
+  getEpisode: (
+    showId: number,
+    seasonNumber: number,
+    episodeNumber: number,
+    language?: string | null
+  ) =>
+    get<TmdbEpisode>(
+      `/tv/${showId}/season/${seasonNumber}/episode/${episodeNumber}`,
+      language ? { language } : {}
+    ),
+
   getSeasons: async (
     showId: number,
     totalSeasons: number,
@@ -174,6 +189,18 @@ export function providerLogoUrl(path: string | null | undefined): string | null 
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** Display TMDB date strings as DD-MM-YYYY (European). */
+export function formatEuropeanDate(iso?: string | null): string | null {
+  if (!iso) return null;
+  const day = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (day) return `${day[3]}-${day[2]}-${day[1]}`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  return `${dd}-${mm}-${d.getFullYear()}`;
+}
 
 /** Returns "Airs 15 Sep" when the date is in the future, otherwise null. */
 export function formatAirsLabel(iso?: string | null): string | null {

@@ -13,9 +13,10 @@ import {
 import { useLocalSearchParams, Stack } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { id as instantId } from '@instantdb/react-native';
-import { tmdb, posterUrl, stillUrl, TmdbShow, TmdbSeasonSummary, TmdbEpisode, TmdbWatchProvider, providerLogoUrl } from '@/lib/tmdb';
+import { tmdb, posterUrl, stillUrl, formatEuropeanDate, formatRuntime, TmdbShow, TmdbSeasonSummary, TmdbEpisode, TmdbWatchProvider, providerLogoUrl } from '@/lib/tmdb';
 import db from '@/lib/db';
 import { progressUpdates, hasAired, isFutureAirDate, findProgressFromTmdb } from '@/lib/progress';
+import { averageEpisodeRuntime, episodeRuntimeMinutes } from '@/lib/stats';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
 import { uniqueByTmdbShowId, createUserShowTx } from '@/lib/userShows';
@@ -166,6 +167,18 @@ export default function ShowDetailScreen() {
     return () => { active = false; };
   }, [showId]);
 
+  // Persist average episode length for Profile time stats.
+  useEffect(() => {
+    if (!userShow || !show) return;
+    const existing = Number(userShow.episodeRuntime);
+    if (Number.isFinite(existing) && existing > 0) return;
+    const runtime = averageEpisodeRuntime(show.episode_run_time);
+    if (runtime == null) return;
+    db.transact([db.tx.userShows[userShow.id].update({ episodeRuntime: runtime })]).catch(
+      () => {}
+    );
+  }, [userShow?.id, userShow?.episodeRuntime, show?.id, show?.episode_run_time]);
+
   async function ensureSeason(seasonNum: number): Promise<TmdbEpisode[]> {
     if (episodesBySeason[seasonNum]) return episodesBySeason[seasonNum];
     setLoadingSeason(seasonNum);
@@ -219,12 +232,15 @@ export default function ShowDetailScreen() {
     if (existing) {
       await db.transact([db.tx.watchedEpisodes[existing.id].delete()]);
     } else {
+      const ep = episodesBySeason[seasonNum]?.find(e => e.episode_number === episodeNum);
+      const runtime = episodeRuntimeMinutes(ep?.runtime);
       await db.transact([
         db.tx.watchedEpisodes[instantId()].update({
           tmdbShowId: showId,
           seasonNumber: seasonNum,
           episodeNumber: episodeNum,
           watchedAt: new Date().toISOString(),
+          ...(runtime != null ? { runtime } : {}),
         }).link({ $user: user.id }),
       ]);
     }
@@ -269,7 +285,9 @@ export default function ShowDetailScreen() {
       .catch(e => console.warn('Failed to sync next episode', e));
   }
 
-  async function writeWatched(episodes: { season: number; ep: number }[]) {
+  async function writeWatched(
+    episodes: { season: number; ep: number; runtime?: number | null }[]
+  ) {
     if (!user || episodes.length === 0) return;
     const now = new Date().toISOString();
     const CHUNK = 40;
@@ -282,13 +300,16 @@ export default function ShowDetailScreen() {
             seasonNumber: item.season,
             episodeNumber: item.ep,
             watchedAt: now,
+            ...(item.runtime != null && item.runtime > 0 ? { runtime: item.runtime } : {}),
           }).link({ $user: user.id })
         )
       );
     }
   }
 
-  async function collectAiredUnwatched(seasonNumber: number): Promise<{ season: number; ep: number }[]> {
+  async function collectAiredUnwatched(
+    seasonNumber: number
+  ): Promise<{ season: number; ep: number; runtime?: number | null }[]> {
     const eps = await ensureSeason(seasonNumber);
     return eps
       .filter(
@@ -296,7 +317,11 @@ export default function ShowDetailScreen() {
           hasAired(ep.air_date) &&
           !watchedSet.has(`${seasonNumber}x${ep.episode_number}`)
       )
-      .map(ep => ({ season: seasonNumber, ep: ep.episode_number }));
+      .map(ep => ({
+        season: seasonNumber,
+        ep: ep.episode_number,
+        runtime: episodeRuntimeMinutes(ep.runtime),
+      }));
   }
 
   async function unmarkSeason(seasonNumber: number) {
@@ -346,7 +371,7 @@ export default function ShowDetailScreen() {
       }
     }
 
-    const toAdd: { season: number; ep: number }[] = [];
+    const toAdd: { season: number; ep: number; runtime?: number | null }[] = [];
     if (includeEarlier) {
       for (const s of seasonMeta) {
         if (s.season_number <= 0 || s.season_number > seasonNumber) continue;
@@ -387,16 +412,42 @@ export default function ShowDetailScreen() {
     if (userShow) {
       await db.transact([db.tx.userShows[userShow.id].update({ status })]);
     } else if (show) {
-      const { tx } = createUserShowTx(user.id, {
+      const now = new Date().toISOString();
+      const provisionalAir = show.first_air_date || '';
+      const episodeRuntime = averageEpisodeRuntime(show.episode_run_time);
+      const { entityId, tx } = createUserShowTx(user.id, {
         tmdbShowId: show.id,
         tmdbShowName: show.name,
         tmdbPosterPath: show.poster_path ?? '',
         status,
-        addedAt: new Date().toISOString(),
-        lastTouchedAt: new Date().toISOString(),
+        addedAt: now,
+        lastTouchedAt: now,
         tmdbOriginalLanguage: show.original_language ?? '',
+        nextSeasonNum: 1,
+        nextEpisodeNum: 1,
+        nextEpisodeName: '',
+        nextEpisodeAirDate: provisionalAir,
+        nextEpisodeStillPath: '',
+        totalEpisodes: show.number_of_episodes ?? 0,
+        ...(episodeRuntime != null ? { episodeRuntime } : {}),
       });
       await db.transact([tx]);
+      findProgressFromTmdb(show.id, new Set(), 1)
+        .then(progress => {
+          const updates = progressUpdates(progress);
+          // Keep an explicit Watch Later / Finished choice from the picker.
+          if (status === 'watchLater' || status === 'finished') {
+            updates.status = status;
+          }
+          return db.transact([
+            db.tx.userShows[entityId].update({
+              ...updates,
+              tmdbOriginalLanguage: show.original_language ?? '',
+              ...(episodeRuntime != null ? { episodeRuntime } : {}),
+            }),
+          ]);
+        })
+        .catch(e => console.warn('Failed to enrich added show', e));
     }
   }
 
@@ -630,7 +681,14 @@ export default function ShowDetailScreen() {
                         `${season.season_number}x${ep.episode_number}`
                       );
                       const aired = hasAired(ep.air_date);
+                      const airDateLabel = formatEuropeanDate(ep.air_date);
+                      const runtimeLabel = formatRuntime(ep.runtime);
                       const still = stillUrl(ep.still_path, 'w185');
+                      const dateLine = !aired
+                        ? airDateLabel
+                          ? `Out ${airDateLabel}`
+                          : 'Not out yet'
+                        : airDateLabel ?? '';
                       const row = (
                         <>
                           <View style={styles.epStillWrap}>
@@ -660,14 +718,9 @@ export default function ShowDetailScreen() {
                               numberOfLines={1}
                             >
                               {ep.episode_number}. {ep.name}
+                              {runtimeLabel ? ` · ${runtimeLabel}` : ''}
                             </Text>
-                            <Text style={styles.epDate}>
-                              {!aired
-                                ? 'Not out yet'
-                                : ep.air_date
-                                  ? ep.air_date
-                                  : ''}
-                            </Text>
+                            {dateLine ? <Text style={styles.epDate}>{dateLine}</Text> : null}
                           </View>
                         </>
                       );

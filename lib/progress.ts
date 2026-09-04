@@ -1,3 +1,4 @@
+import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
 
 export function parseAirDay(iso?: string | null): Date | null {
@@ -114,6 +115,7 @@ export type ProgressEpisode = {
   name: string;
   airDate: string;
   stillPath?: string | null;
+  runtime?: number | null;
 };
 
 export type WatchStatus = 'watching' | 'upToDate' | 'finished';
@@ -125,6 +127,7 @@ export type ProgressResult = {
   nextEpisodeName?: string;
   nextEpisodeAirDate?: string;
   nextEpisodeStillPath?: string;
+  nextEpisodeRuntime?: number;
   originalLanguage?: string;
   totalEpisodes?: number;
   unwatchedAiredCount?: number;
@@ -150,6 +153,7 @@ export function computeProgress(
   const ended = isShowEnded(tmdbStatus);
 
   if (nextAired) {
+    const runtime = Number(nextAired.runtime);
     return {
       status: 'watching',
       nextSeasonNum: nextAired.season,
@@ -157,6 +161,7 @@ export function computeProgress(
       nextEpisodeName: nextAired.name,
       nextEpisodeAirDate: nextAired.airDate,
       nextEpisodeStillPath: nextAired.stillPath ?? '',
+      ...(Number.isFinite(runtime) && runtime > 0 ? { nextEpisodeRuntime: Math.round(runtime) } : {}),
       totalEpisodes: episodes.length,
       unwatchedAiredCount: unwatchedAired.length,
       remainingAiredCount: Math.max(0, unwatchedAired.length - 1),
@@ -164,6 +169,7 @@ export function computeProgress(
   }
 
   if (nextFuture) {
+    const runtime = Number(nextFuture.runtime);
     return {
       status: 'upToDate',
       nextSeasonNum: nextFuture.season,
@@ -171,6 +177,7 @@ export function computeProgress(
       nextEpisodeName: nextFuture.name,
       nextEpisodeAirDate: nextFuture.airDate,
       nextEpisodeStillPath: nextFuture.stillPath ?? '',
+      ...(Number.isFinite(runtime) && runtime > 0 ? { nextEpisodeRuntime: Math.round(runtime) } : {}),
       totalEpisodes: episodes.length,
       unwatchedAiredCount: 0,
       remainingAiredCount: 0,
@@ -195,6 +202,7 @@ export function progressUpdates(result: ProgressResult): Record<string, unknown>
     nextEpisodeName: result.nextEpisodeName ?? '',
     nextEpisodeAirDate: result.nextEpisodeAirDate ?? '',
     nextEpisodeStillPath: result.nextEpisodeStillPath ?? '',
+    nextEpisodeRuntime: result.nextEpisodeRuntime ?? null,
     unwatchedAiredCount: result.unwatchedAiredCount ?? 0,
     remainingAiredCount: result.remainingAiredCount ?? 0,
   };
@@ -230,6 +238,7 @@ export async function findProgressFromTmdb(
     name: string;
     air_date: string;
     still_path: string | null;
+    runtime?: number | null;
   };
   const airedUnwatched: NextEp[] = [];
   let nextFuture: NextEp | null = null;
@@ -254,6 +263,7 @@ export async function findProgressFromTmdb(
           name: e.name,
           air_date: airDate,
           still_path: e.still_path ?? null,
+          runtime: e.runtime,
         });
         continue;
       }
@@ -265,6 +275,7 @@ export async function findProgressFromTmdb(
           name: e.name,
           air_date: airDate,
           still_path: e.still_path ?? null,
+          runtime: e.runtime,
         };
       }
     }
@@ -287,8 +298,33 @@ export async function findProgressFromTmdb(
     }
   }
 
+  const showAvg = averageEpisodeRuntime(details.episode_run_time);
+
+  async function resolveRuntime(
+    season: number,
+    ep: number,
+    listed?: number | null
+  ): Promise<number | undefined> {
+    let mins = episodeRuntimeMinutes(listed);
+    if (mins == null) {
+      try {
+        const detail = await tmdb.getEpisode(tmdbShowId, season, ep, lang);
+        mins = episodeRuntimeMinutes(detail.runtime);
+      } catch {
+        // Fall through to show average.
+      }
+    }
+    if (mins == null) mins = showAvg;
+    return mins ?? undefined;
+  }
+
   const nextAired = airedUnwatched[0];
   if (nextAired) {
+    const nextEpisodeRuntime = await resolveRuntime(
+      nextAired.season_number,
+      nextAired.episode_number,
+      nextAired.runtime
+    );
     return {
       status: 'watching',
       nextSeasonNum: nextAired.season_number,
@@ -296,6 +332,7 @@ export async function findProgressFromTmdb(
       nextEpisodeName: nextAired.name,
       nextEpisodeAirDate: nextAired.air_date,
       nextEpisodeStillPath: nextAired.still_path ?? '',
+      ...(nextEpisodeRuntime != null ? { nextEpisodeRuntime } : {}),
       originalLanguage: lang ?? '',
       totalEpisodes,
       unwatchedAiredCount: airedUnwatched.length,
@@ -304,6 +341,11 @@ export async function findProgressFromTmdb(
   }
 
   if (nextFuture) {
+    const nextEpisodeRuntime = await resolveRuntime(
+      nextFuture.season_number,
+      nextFuture.episode_number,
+      nextFuture.runtime
+    );
     return {
       status: 'upToDate',
       nextSeasonNum: nextFuture.season_number,
@@ -311,6 +353,7 @@ export async function findProgressFromTmdb(
       nextEpisodeName: nextFuture.name,
       nextEpisodeAirDate: nextFuture.air_date,
       nextEpisodeStillPath: nextFuture.still_path ?? '',
+      ...(nextEpisodeRuntime != null ? { nextEpisodeRuntime } : {}),
       originalLanguage: lang ?? '',
       totalEpisodes,
       unwatchedAiredCount: 0,

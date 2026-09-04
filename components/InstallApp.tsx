@@ -14,11 +14,6 @@ function isStandalone(): boolean {
   return Boolean(media || ios);
 }
 
-function isIos(): boolean {
-  if (typeof navigator === 'undefined') return false;
-  return /iPhone|iPad|iPod/i.test(navigator.userAgent);
-}
-
 export default function InstallApp() {
   const [deferred, setDeferred] = useState<BeforeInstallPrompt | null>(null);
   const [installed, setInstalled] = useState(isStandalone());
@@ -60,23 +55,7 @@ export default function InstallApp() {
     );
   }
 
-  if (isIos()) {
-    return (
-      <View style={styles.hint}>
-        <Text style={styles.hintText}>
-          On iPhone: tap Share, then Add to Home Screen. That installs Watch'd It as an app without the browser bar.
-        </Text>
-      </View>
-    );
-  }
-
-  return (
-    <View style={styles.hint}>
-      <Text style={styles.hintText}>
-        In Chrome, open the menu and tap Install app. Use the Vercel HTTPS site, not a bookmark.
-      </Text>
-    </View>
-  );
+  return null;
 }
 
 const styles = StyleSheet.create({
@@ -94,15 +73,5 @@ const styles = StyleSheet.create({
     color: theme.text,
     fontSize: 16,
     fontWeight: '600',
-  },
-  hint: {
-    marginTop: 16,
-    paddingHorizontal: 8,
-  },
-  hintText: {
-    color: theme.muted,
-    fontSize: 13,
-    lineHeight: 18,
-    textAlign: 'center',
   },
 });

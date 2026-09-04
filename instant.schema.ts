@@ -18,11 +18,15 @@ const _schema = i.schema({
       nextEpisodeName: i.string().optional(),
       nextEpisodeAirDate: i.string().optional(),
       nextEpisodeStillPath: i.string().optional(),
+      /** Runtime in minutes of the next episode to watch. */
+      nextEpisodeRuntime: i.number().optional(),
       unwatchedAiredCount: i.number().optional(),
       remainingAiredCount: i.number().optional(),
       tvTimeSeriesId: i.number().optional(),
       lastTouchedAt: i.date().optional().indexed(),
       tmdbOriginalLanguage: i.string().optional(),
+      /** Average episode length in minutes (from TMDB episode_run_time). */
+      episodeRuntime: i.number().optional(),
       ownerShowKey: i.string().unique().indexed().optional(),
     }),
     watchedEpisodes: i.entity({
@@ -30,6 +34,8 @@ const _schema = i.schema({
       seasonNumber: i.number(),
       episodeNumber: i.number(),
       watchedAt: i.date(),
+      /** Exact TMDB episode runtime in minutes when known. */
+      runtime: i.number().optional(),
     }),
     userMovies: i.entity({
       tmdbMovieId: i.number().indexed(),

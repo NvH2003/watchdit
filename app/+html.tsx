@@ -19,6 +19,7 @@ export default function Root({ children }: { children: ReactNode }) {
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Watch'd It" />
         <link rel="manifest" href="/manifest.json" />
+        <link rel="icon" type="image/png" href="/favicon.png" />
         <link rel="apple-touch-icon" href="/pwa-180.png" />
         <script dangerouslySetInnerHTML={{ __html: registerServiceWorker }} />
 

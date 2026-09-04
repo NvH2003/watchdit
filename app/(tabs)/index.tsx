@@ -22,6 +22,8 @@ import {
   readyForWatchlist,
   readyForUpcoming,
 } from '@/lib/progress';
+import { episodeRuntimeMinutes } from '@/lib/stats';
+import { tmdb } from '@/lib/tmdb';
 import { theme } from '@/constants/theme';
 import { uniqueByTmdbShowId } from '@/lib/userShows';
 import {
@@ -152,6 +154,16 @@ export default function EpisodesScreen() {
         if (s.status === 'upToDate' && hasAired(air)) return true;
         // No known future episode — TMDB may have published a new one.
         if (s.status === 'upToDate' && !isFutureAirDate(air)) return true;
+        // Need next-episode runtime on To watch without opening the show.
+        const nextRt = Number(s.nextEpisodeRuntime);
+        if (
+          (s.status === 'watching' || s.status === 'upToDate') &&
+          season != null &&
+          ep != null &&
+          !(Number.isFinite(nextRt) && nextRt > 0)
+        ) {
+          return true;
+        }
         if (!recategorizedRef.current) return true;
         return s.status === 'watching' && s.remainingAiredCount == null;
       });
@@ -333,13 +345,24 @@ export default function EpisodesScreen() {
     const now = new Date().toISOString();
     const transactions: ReturnType<typeof db.tx.watchedEpisodes[string]['update']>[] = [];
 
+    let episodeRuntime: number | null = null;
     if (episodeId) {
+      try {
+        const lang = (show.tmdbOriginalLanguage as string | undefined) || undefined;
+        const season = await tmdb.getSeason(tmdbId, curSeason, lang);
+        const ep = (season.episodes ?? []).find(e => e.episode_number === curEpisode);
+        episodeRuntime = episodeRuntimeMinutes(ep?.runtime);
+      } catch {
+        episodeRuntime = episodeRuntimeMinutes(show.episodeRuntime as number | undefined);
+      }
+
       transactions.push(
         db.tx.watchedEpisodes[episodeId].update({
           tmdbShowId: tmdbId,
           seasonNumber: curSeason,
           episodeNumber: curEpisode,
           watchedAt: now,
+          ...(episodeRuntime != null ? { runtime: episodeRuntime } : {}),
         }).link({ $user: user.id })
       );
     }
@@ -429,6 +452,8 @@ export default function EpisodesScreen() {
         nextEpisodeName={item.nextEpisodeName as string | null | undefined}
         nextEpisodeAirDate={item.nextEpisodeAirDate as string | null | undefined}
         nextEpisodeStillPath={item.nextEpisodeStillPath as string | null | undefined}
+        nextEpisodeRuntime={item.nextEpisodeRuntime as number | null | undefined}
+        episodeRuntime={item.episodeRuntime as number | null | undefined}
         remainingCount={getRemainingCount(item)}
         canMark={hasAired(item.nextEpisodeAirDate as string | undefined)}
         onShowPress={() => router.push(`/show/${item.tmdbShowId}`)}

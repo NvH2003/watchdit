@@ -14,7 +14,7 @@ import AuthScreen from '@/components/AuthScreen';
 import HeaderBackButton from '@/components/HeaderBackButton';
 import { InstantConnecting, InstantUnreachable } from '@/components/InstantGate';
 import { theme } from '@/constants/theme';
-import { useDedupeUserShows } from '@/lib/userShows';
+import { useDedupeUserShows, usePromoteAiredUpToDate } from '@/lib/userShows';
 
 export { ErrorBoundary } from 'expo-router';
 
@@ -68,6 +68,7 @@ function InstantSession({ colorScheme }: { colorScheme: ReturnType<typeof useCol
   const [timedOut, setTimedOut] = useState(false);
   const hydrated = useClientOnlyValue(false, true);
   useDedupeUserShows();
+  usePromoteAiredUpToDate();
 
   useEffect(() => {
     const timer = setTimeout(() => setTimedOut(true), 5000);

@@ -11,7 +11,17 @@ import { id as instantId } from '@instantdb/react-native';
 import db from '@/lib/db';
 import ShowRowTV, { ShowStatus } from '@/components/ShowRowTV';
 import ShowGridCard from '@/components/ShowGridCard';
-import { hasAired, isFutureAirDate, findProgressFromTmdb, progressUpdates, remainingAfterCurrent } from '@/lib/progress';
+import {
+  hasAired,
+  isFutureAirDate,
+  findProgressFromTmdb,
+  progressUpdates,
+  remainingAfterCurrent,
+  localDayKey,
+  msUntilNextLocalMidnight,
+  readyForWatchlist,
+  readyForUpcoming,
+} from '@/lib/progress';
 import { theme } from '@/constants/theme';
 import { uniqueByTmdbShowId } from '@/lib/userShows';
 import {
@@ -74,6 +84,7 @@ export default function EpisodesScreen() {
   const [undo, setUndo] = useState<UndoSnapshot | null>(null);
   const [bucketFilter, setBucketFilter] = useState<'all' | WatchlistBucket>('all');
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [dayKey, setDayKey] = useState(() => localDayKey());
 
   const { user } = db.useAuth();
   const { isLoading, data } = db.useQuery(
@@ -97,12 +108,37 @@ export default function EpisodesScreen() {
     return () => clearTimeout(t);
   }, [undo]);
 
+  // Recompute air-date lists at local midnight (and after sleep/wake).
+  useEffect(() => {
+    let midnightTimer: ReturnType<typeof setTimeout> | undefined;
+    const armMidnight = () => {
+      midnightTimer = setTimeout(() => {
+        setDayKey(localDayKey());
+        armMidnight();
+      }, msUntilNextLocalMidnight());
+    };
+    armMidnight();
+    const poll = setInterval(() => {
+      const key = localDayKey();
+      setDayKey(prev => (prev === key ? prev : key));
+    }, 60_000);
+    return () => {
+      if (midnightTimer) clearTimeout(midnightTimer);
+      clearInterval(poll);
+    };
+  }, []);
+
   // Recategorize imported/stale shows: watching vs up to date vs finished.
   useFocusEffect(
     useCallback(() => {
       if (!user || checkingRef.current) return;
       const toCheck = allShows.filter(s => {
         if (s.status === 'watchLater' || s.status === 'finished') return false;
+        const air = s.nextEpisodeAirDate as string | undefined;
+        // Next episode already out — refresh so To watch gets full +N / stills.
+        if (s.status === 'upToDate' && hasAired(air)) return true;
+        // No known future episode — TMDB may have published a new one.
+        if (s.status === 'upToDate' && !isFutureAirDate(air)) return true;
         if (!recategorizedRef.current) return true;
         return s.status === 'watching' && s.remainingAiredCount == null;
       });
@@ -144,18 +180,14 @@ export default function EpisodesScreen() {
         cancelled = true;
       };
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [user?.id, allShows.length, watchedEps.length])
+    }, [user?.id, allShows.length, watchedEps.length, dayKey])
   );
 
-  const watchlistShows = allShows.filter(
-    s =>
-      s.status === 'watching' &&
-      hasAired(s.nextEpisodeAirDate as string | undefined)
+  const watchlistShows = allShows.filter(s =>
+    readyForWatchlist(s.status as string | undefined, s.nextEpisodeAirDate as string | undefined)
   );
-  const upcomingShows = allShows.filter(
-    s =>
-      (s.status === 'watching' || s.status === 'upToDate') &&
-      isFutureAirDate(s.nextEpisodeAirDate as string | undefined)
+  const upcomingShows = allShows.filter(s =>
+    readyForUpcoming(s.status as string | undefined, s.nextEpisodeAirDate as string | undefined)
   );
 
   const sections = useMemo(() => {
@@ -184,7 +216,7 @@ export default function EpisodesScreen() {
             ? sortStale(buckets[key], lastOf)
             : sortNotStarted(buckets[key], lastOf),
     })).filter(s => s.data.length > 0);
-  }, [watchlistShows, watchedEps, allShows]);
+  }, [watchlistShows, watchedEps, allShows, dayKey]);
 
   const upcomingSections = useMemo(() => {
     const airOf = (show: (typeof allShows)[0]) =>
@@ -208,7 +240,7 @@ export default function EpisodesScreen() {
       title,
       data: sortByAirDate(buckets[key], airOf),
     })).filter(s => s.data.length > 0);
-  }, [upcomingShows, allShows]);
+  }, [upcomingShows, allShows, dayKey]);
 
   function getWatchedCount(showId: number) {
     return watchedCount(watchedEps, showId);

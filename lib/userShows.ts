@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { id as instantId } from '@instantdb/react-native';
 import db from './db';
+import { hasAired, localDayKey, msUntilNextLocalMidnight } from './progress';
 
 export function ownerShowKey(userId: string, tmdbShowId: number): string {
   return `${userId}:${tmdbShowId}`;
@@ -128,4 +129,53 @@ export function useDedupeUserShows() {
     };
     run();
   }, [user, data?.userShows]);
+}
+
+/**
+ * When an up-to-date show's next episode airs (calendar day), flip to watching
+ * immediately so To watch / Profile update without waiting for a TMDB refresh.
+ */
+export function usePromoteAiredUpToDate() {
+  const { user } = db.useAuth();
+  const { data } = db.useQuery(
+    user ? { userShows: { $: { where: { '$user.id': user.id } } } } : null
+  );
+  const [dayKey, setDayKey] = useState(() => localDayKey());
+  const busy = useRef(false);
+
+  useEffect(() => {
+    let midnightTimer: ReturnType<typeof setTimeout> | undefined;
+    const armMidnight = () => {
+      midnightTimer = setTimeout(() => {
+        setDayKey(localDayKey());
+        armMidnight();
+      }, msUntilNextLocalMidnight());
+    };
+    armMidnight();
+    const poll = setInterval(() => {
+      const key = localDayKey();
+      setDayKey(prev => (prev === key ? prev : key));
+    }, 60_000);
+    return () => {
+      if (midnightTimer) clearTimeout(midnightTimer);
+      clearInterval(poll);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user || !data?.userShows || busy.current) return;
+    const due = data.userShows.filter(
+      s =>
+        s.status === 'upToDate' &&
+        hasAired(s.nextEpisodeAirDate as string | undefined)
+    );
+    if (due.length === 0) return;
+
+    busy.current = true;
+    db.transact(due.map(s => db.tx.userShows[s.id].update({ status: 'watching' })))
+      .catch(e => console.warn('Failed to promote aired up-to-date shows', e))
+      .finally(() => {
+        busy.current = false;
+      });
+  }, [user, data?.userShows, dayKey]);
 }

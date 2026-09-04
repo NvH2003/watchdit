@@ -30,6 +30,42 @@ export function isFutureAirDate(iso?: string | null): boolean {
   return air.getTime() > today.getTime();
 }
 
+/** Local calendar day key — changes at midnight so aired lists can refresh. */
+export function localDayKey(now = new Date()): string {
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/** Ms until the next local midnight (+buffer), for scheduling day rollovers. */
+export function msUntilNextLocalMidnight(now = new Date()): number {
+  const next = new Date(now);
+  next.setHours(24, 0, 0, 0);
+  return Math.max(50, next.getTime() - now.getTime() + 50);
+}
+
+/**
+ * Show belongs on To watch once its next episode has aired.
+ * Includes upToDate rows that still need a status flip after the air date arrives.
+ */
+export function readyForWatchlist(
+  status?: string | null,
+  nextEpisodeAirDate?: string | null
+): boolean {
+  if (status !== 'watching' && status !== 'upToDate') return false;
+  return hasAired(nextEpisodeAirDate);
+}
+
+/** Show belongs on Coming up while the next episode still has a future air date. */
+export function readyForUpcoming(
+  status?: string | null,
+  nextEpisodeAirDate?: string | null
+): boolean {
+  if (status !== 'watching' && status !== 'upToDate') return false;
+  return isFutureAirDate(nextEpisodeAirDate);
+}
+
 /** TMDB TV status: Ended / Canceled vs still running. */
 export function isShowEnded(tmdbStatus?: string | null): boolean {
   const s = (tmdbStatus ?? '').toLowerCase();

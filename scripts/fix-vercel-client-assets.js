@@ -1,6 +1,9 @@
 /**
- * Vercel is not serving Expo's client JS from dist/client/_expo (404), while
- * /assets/* works. Copy the web entry bundle into assets/js and rewrite HTML.
+ * Vercel does not reliably serve Expo's `/_expo/static/...` client bundles.
+ * Copy them under `/assets/...` (which does get published) and rewrite HTML.
+ *
+ * Also: never let the build succeed if the rewritten entry file is missing —
+ * a missing file + long Cache-Control caused sticky "Couldn't load the app".
  */
 const fs = require('fs');
 const path = require('path');
@@ -22,6 +25,8 @@ function walk(dir, out = []) {
 
 function rewriteFile(file, replacements) {
   if (!/\.(html|js|json|css|map)$/i.test(file)) return false;
+  // Don't rewrite our own inline detector strings inside baked HTML more than needed;
+  // replacements are exact entry paths / static prefixes only.
   let text = fs.readFileSync(file, 'utf8');
   let changed = false;
   for (const [from, to] of replacements) {
@@ -34,8 +39,8 @@ function rewriteFile(file, replacements) {
 }
 
 if (!fs.existsSync(EXPO_JS_DIR)) {
-  console.warn('fix-vercel-client-assets: no dist/client/_expo/static/js/web — skipping');
-  process.exit(0);
+  console.error('fix-vercel-client-assets: missing dist/client/_expo/static/js/web');
+  process.exit(1);
 }
 
 fs.mkdirSync(ASSET_JS_DIR, { recursive: true });
@@ -50,17 +55,23 @@ if (entries.length === 0) {
 }
 
 const replacements = [];
+const published = [];
+
 for (const name of entries) {
   const from = path.join(EXPO_JS_DIR, name);
   const to = path.join(ASSET_JS_DIR, name);
   fs.copyFileSync(from, to);
   const size = fs.statSync(to).size;
+  if (size < 100_000) {
+    console.error(`fix-vercel-client-assets: ${name} looks too small (${size} bytes)`);
+    process.exit(1);
+  }
   console.log(`copied ${name} (${Math.round(size / 1024)} KB) → assets/js/`);
+  published.push({ name, size, url: `/assets/js/${name}` });
   replacements.push([`/_expo/static/js/web/${name}`, `/assets/js/${name}`]);
   replacements.push([`/expo/static/js/web/${name}`, `/assets/js/${name}`]);
 }
 
-// Keep a generic rewrite for any remaining _expo/static URL (css, etc.)
 const EXPO_STATIC = path.join(CLIENT_ROOT, '_expo', 'static');
 const ASSET_EXPO_STATIC = path.join(CLIENT_ROOT, 'assets', 'expo-static');
 if (fs.existsSync(EXPO_STATIC)) {
@@ -76,4 +87,24 @@ for (const root of [CLIENT_ROOT, SERVER_ROOT]) {
   }
 }
 
-console.log(`fix-vercel-client-assets: rewrote ${rewritten} files to use /assets/…`);
+// Verify every published entry is referenced from server HTML and still on disk.
+const serverHtml = walk(SERVER_ROOT).filter(f => f.endsWith('.html'));
+for (const { name, url } of published) {
+  const onDisk = fs.existsSync(path.join(ASSET_JS_DIR, name));
+  if (!onDisk) {
+    console.error(`fix-vercel-client-assets: missing after copy: ${name}`);
+    process.exit(1);
+  }
+  const referenced = serverHtml.some(file => fs.readFileSync(file, 'utf8').includes(url));
+  if (!referenced) {
+    console.error(`fix-vercel-client-assets: ${url} not referenced in any server HTML`);
+    process.exit(1);
+  }
+}
+
+fs.writeFileSync(
+  path.join(ASSET_JS_DIR, 'manifest.json'),
+  JSON.stringify({ generatedAt: new Date().toISOString(), entries: published }, null, 2)
+);
+
+console.log(`fix-vercel-client-assets: rewrote ${rewritten} files; ok`);

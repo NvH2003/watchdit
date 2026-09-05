@@ -22,7 +22,7 @@ export default function Root({ children }: { children: ReactNode }) {
         <link rel="icon" type="image/png" href="/favicon.png" />
         <link rel="apple-touch-icon" href="/pwa-180.png" />
         <script dangerouslySetInnerHTML={{ __html: registerServiceWorker }} />
-        <script dangerouslySetInnerHTML={{ __html: detectBundleFailure }} />
+        <script dangerouslySetInnerHTML={{ __html: ensureClientEntry }} />
 
         {/*
           Disable body scrolling on web. This makes ScrollView components work closer to how they do on native.
@@ -61,15 +61,29 @@ if ('serviceWorker' in navigator) {
 }
 `;
 
-const detectBundleFailure = `
-window.addEventListener('error', function (event) {
-  var el = event && event.target;
-  if (!el || el.tagName !== 'SCRIPT' || !el.src) return;
-  if (el.src.indexOf('/assets/js/') === -1 && el.src.indexOf('/_expo/static/') === -1) return;
-  var root = document.getElementById('root') || document.body;
-  if (!root) return;
-  root.innerHTML = '<div style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#121110;color:#f3efe8;font-family:system-ui,sans-serif;padding:32px;text-align:center"><h1 style="font-size:22px;margin:0 0 12px">Couldn’t load the app</h1><p style="color:#9a938a;line-height:1.5;margin:0 0 20px">The JavaScript bundle failed to load. Clear cache or try again.</p><button type="button" id="watchdit-reload" style="background:#e85d4c;color:#fff;border:0;border-radius:12px;padding:12px 24px;font-size:16px;font-weight:600;cursor:pointer">Try again</button></div>';
-  var btn = document.getElementById('watchdit-reload');
-  if (btn) btn.onclick = function () { location.replace(location.pathname + '?nocache=' + Date.now()); };
-}, true);
+// Keep the deferred Expo entry script pointed at the published hash from
+// /assets/js/manifest.json. Do not replace the whole page on failure — that
+// made recoveries harder when CDN and SSR briefly drifted.
+const ensureClientEntry = `
+(function () {
+  function apply(url) {
+    if (!url) return;
+    var scripts = document.querySelectorAll('script[src*="entry-"]');
+    for (var i = 0; i < scripts.length; i++) {
+      var src = scripts[i].getAttribute('src') || '';
+      if (src.indexOf('/assets/js/entry-') === 0 || src.indexOf('/_expo/static/js/web/entry-') === 0 || src.indexOf('/expo/static/js/web/entry-') === 0) {
+        if (src !== url) scripts[i].setAttribute('src', url);
+      }
+    }
+  }
+  try {
+    fetch('/assets/js/manifest.json', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (m) {
+        var url = m && m.entries && m.entries[0] && m.entries[0].url;
+        apply(url);
+      })
+      .catch(function () {});
+  } catch (e) {}
+})();
 `;

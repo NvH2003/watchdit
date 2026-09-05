@@ -5,8 +5,7 @@ const { createRequestHandler } = require('expo-server/adapter/vercel');
 const serverDir = path.join(__dirname, '../dist/server');
 
 function readEntryUrl() {
-  // IMPORTANT: never require() these JSON files — the Vercel function bundler
-  // can inline a stale copy from a previous build.
+  // Never require() JSON — the function bundler can inline a stale copy.
   const candidates = [
     path.join(__dirname, '../dist/client/assets/js/manifest.json'),
     path.join(process.cwd(), 'dist/client/assets/js/manifest.json'),
@@ -32,86 +31,37 @@ function rewriteEntryScripts(html, entryUrl) {
     .replace(/\/expo\/static\/js\/web\/entry-[a-f0-9]+\.js/g, entryUrl);
 }
 
-const expoHandler = createRequestHandler({
+function syncHtmlFilesOnDisk() {
+  const entryUrl = readEntryUrl();
+  if (!entryUrl || !fs.existsSync(serverDir)) return entryUrl;
+
+  const walk = dir => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!entry.name.endsWith('.html')) continue;
+      const before = fs.readFileSync(full, 'utf8');
+      const after = rewriteEntryScripts(before, entryUrl);
+      if (after !== before) fs.writeFileSync(full, after);
+    }
+  };
+
+  try {
+    walk(serverDir);
+  } catch (error) {
+    console.warn('api/index: could not sync HTML entry scripts', error);
+  }
+  return entryUrl;
+}
+
+const entryUrl = syncHtmlFilesOnDisk();
+if (entryUrl) {
+  console.log('api/index: using client entry', entryUrl);
+}
+
+module.exports = createRequestHandler({
   build: serverDir,
 });
-
-module.exports = async function handler(req, res) {
-  const entryUrl = readEntryUrl();
-  const pathName = (req.url || '').split('?')[0];
-  const patchHtml = Boolean(entryUrl) && !pathName.startsWith('/api/');
-
-  if (!patchHtml) {
-    return expoHandler(req, res);
-  }
-
-  const chunks = [];
-  let contentType = '';
-  const originalSetHeader = res.setHeader.bind(res);
-  const originalWrite = res.write.bind(res);
-  const originalEnd = res.end.bind(res);
-
-  res.setHeader = (name, value) => {
-    if (String(name).toLowerCase() === 'content-type') {
-      contentType = Array.isArray(value) ? value.join(';') : String(value);
-    }
-    return originalSetHeader(name, value);
-  };
-
-  res.write = (chunk, encoding, cb) => {
-    if (chunk == null) return true;
-    const buf = Buffer.isBuffer(chunk)
-      ? chunk
-      : Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8');
-    chunks.push(buf);
-    if (typeof encoding === 'function') encoding();
-    else if (typeof cb === 'function') cb();
-    return true;
-  };
-
-  res.end = (chunk, encoding, cb) => {
-    if (typeof chunk === 'function') {
-      cb = chunk;
-      chunk = undefined;
-      encoding = undefined;
-    } else if (typeof encoding === 'function') {
-      cb = encoding;
-      encoding = undefined;
-    }
-    if (chunk != null && chunk !== '') {
-      chunks.push(
-        Buffer.isBuffer(chunk)
-          ? chunk
-          : Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8')
-      );
-    }
-
-    const raw = Buffer.concat(chunks);
-    const head = raw.slice(0, 64).toString('utf8').toLowerCase();
-    const isHtml =
-      contentType.includes('text/html') ||
-      head.includes('<!doctype') ||
-      head.includes('<html');
-
-    if (isHtml && entryUrl) {
-      const html = rewriteEntryScripts(raw.toString('utf8'), entryUrl);
-      const out = Buffer.from(html, 'utf8');
-      try {
-        originalSetHeader('content-length', String(out.length));
-      } catch {
-        // ignore
-      }
-      try {
-        originalSetHeader('x-watchdit-entry', entryUrl);
-      } catch {
-        // ignore
-      }
-      return originalEnd(out, cb);
-    }
-
-    if (raw.length) originalWrite(raw);
-    return originalEnd(cb);
-  };
-
-  return expoHandler(req, res);
-};

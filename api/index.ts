@@ -5,19 +5,22 @@ const { createRequestHandler } = require('expo-server/adapter/vercel');
 const serverDir = path.join(__dirname, '../dist/server');
 
 function readEntryUrl() {
-  try {
-    // Bundled beside this function on every deploy.
-    const fromApi = require('./entry-url.json');
-    if (typeof fromApi?.url === 'string') return fromApi.url;
-  } catch {
-    // fall through
-  }
-  try {
-    const manifestPath = path.join(__dirname, '../dist/client/assets/js/manifest.json');
-    const url = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).entries?.[0]?.url;
-    if (typeof url === 'string') return url;
-  } catch {
-    // fall through
+  // IMPORTANT: never require() these JSON files — the Vercel function bundler
+  // can inline a stale copy from a previous build.
+  const candidates = [
+    path.join(__dirname, '../dist/client/assets/js/manifest.json'),
+    path.join(process.cwd(), 'dist/client/assets/js/manifest.json'),
+    path.join(__dirname, 'entry-url.json'),
+    path.join(process.cwd(), 'api/entry-url.json'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const json = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+      const url = typeof json.url === 'string' ? json.url : json.entries?.[0]?.url;
+      if (typeof url === 'string' && url.includes('/assets/js/entry-')) return url;
+    } catch {
+      // try next
+    }
   }
   return null;
 }
@@ -84,10 +87,11 @@ module.exports = async function handler(req, res) {
     }
 
     const raw = Buffer.concat(chunks);
+    const head = raw.slice(0, 64).toString('utf8').toLowerCase();
     const isHtml =
       contentType.includes('text/html') ||
-      raw.slice(0, 64).toString('utf8').toLowerCase().includes('<!doctype') ||
-      raw.slice(0, 64).toString('utf8').includes('<html');
+      head.includes('<!doctype') ||
+      head.includes('<html');
 
     if (isHtml && entryUrl) {
       const html = rewriteEntryScripts(raw.toString('utf8'), entryUrl);
@@ -95,9 +99,8 @@ module.exports = async function handler(req, res) {
       try {
         originalSetHeader('content-length', String(out.length));
       } catch {
-        // headers may already be sent
+        // ignore
       }
-      // Debug header so we can confirm the rewrite ran in production.
       try {
         originalSetHeader('x-watchdit-entry', entryUrl);
       } catch {

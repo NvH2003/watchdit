@@ -39,7 +39,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "vercel-build": "expo export -p web && node scripts/fix-vercel-client-assets.js"
+    "vercel-build": "expo export -p web && node scripts/fix-vercel-client-assets.js && node scripts/write-entry-url.js"
   },
   "private": true,
   "engines": {

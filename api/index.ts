@@ -3,22 +3,23 @@ const path = require('path');
 const { createRequestHandler } = require('expo-server/adapter/vercel');
 
 const serverDir = path.join(__dirname, '../dist/server');
-const manifestPath = path.join(__dirname, '../dist/client/assets/js/manifest.json');
-
-// Ensure Vercel rebuilds this function whenever the client entry changes.
-try {
-  require('../dist/client/assets/js/manifest.json');
-} catch {
-  // Build may still be packing files; runtime read below handles it.
-}
 
 function readEntryUrl() {
   try {
-    const url = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).entries?.[0]?.url;
-    return typeof url === 'string' && url.includes('/assets/js/entry-') ? url : null;
+    // Bundled beside this function on every deploy.
+    const fromApi = require('./entry-url.json');
+    if (typeof fromApi?.url === 'string') return fromApi.url;
   } catch {
-    return null;
+    // fall through
   }
+  try {
+    const manifestPath = path.join(__dirname, '../dist/client/assets/js/manifest.json');
+    const url = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).entries?.[0]?.url;
+    if (typeof url === 'string') return url;
+  } catch {
+    // fall through
+  }
+  return null;
 }
 
 function rewriteEntryScripts(html, entryUrl) {
@@ -85,6 +86,7 @@ module.exports = async function handler(req, res) {
     const raw = Buffer.concat(chunks);
     const isHtml =
       contentType.includes('text/html') ||
+      raw.slice(0, 64).toString('utf8').toLowerCase().includes('<!doctype') ||
       raw.slice(0, 64).toString('utf8').includes('<html');
 
     if (isHtml && entryUrl) {
@@ -94,6 +96,12 @@ module.exports = async function handler(req, res) {
         originalSetHeader('content-length', String(out.length));
       } catch {
         // headers may already be sent
+      }
+      // Debug header so we can confirm the rewrite ran in production.
+      try {
+        originalSetHeader('x-watchdit-entry', entryUrl);
+      } catch {
+        // ignore
       }
       return originalEnd(out, cb);
     }

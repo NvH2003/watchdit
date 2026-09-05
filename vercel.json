@@ -1,6 +1,6 @@
 {
   "framework": null,
-  "buildCommand": "npx expo export -p web && node scripts/fix-vercel-client-assets.js",
+  "buildCommand": "npx expo export -p web && node scripts/fix-vercel-client-assets.js && node scripts/write-entry-url.js",
   "outputDirectory": "dist/client",
   "installCommand": "npm install",
   "functions": {

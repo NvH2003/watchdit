@@ -1,58 +1,106 @@
 const fs = require('fs');
 const path = require('path');
+const { createRequestHandler } = require('expo-server/adapter/vercel');
 
 const serverDir = path.join(__dirname, '../dist/server');
 const manifestPath = path.join(__dirname, '../dist/client/assets/js/manifest.json');
 
-/**
- * Static CDN files and the serverless `dist/server` HTML can drift between
- * deploys (stale function package). Force every HTML shell to point at the
- * entry URL from the published client manifest before handling requests.
- */
-function syncEntryScripts() {
-  let entryUrl = null;
-  try {
-    entryUrl = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).entries?.[0]?.url;
-  } catch {
-    console.warn('api/index: missing client JS manifest', manifestPath);
-    return;
-  }
-  if (!entryUrl || typeof entryUrl !== 'string') return;
-
-  const replaceEntry = html =>
-    html.replace(/\/assets\/js\/entry-[a-f0-9]+\.js/g, entryUrl)
-      .replace(/\/_expo\/static\/js\/web\/entry-[a-f0-9]+\.js/g, entryUrl)
-      .replace(/\/expo\/static\/js\/web\/entry-[a-f0-9]+\.js/g, entryUrl);
-
-  function walk(dir) {
-    if (!fs.existsSync(dir)) return;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      if (!entry.name.endsWith('.html')) continue;
-      const before = fs.readFileSync(full, 'utf8');
-      const after = replaceEntry(before);
-      if (after !== before) fs.writeFileSync(full, after);
-    }
-  }
-
-  walk(serverDir);
-}
-
-syncEntryScripts();
-
-// Bust Vercel function cache when the client entry changes.
+// Ensure Vercel rebuilds this function whenever the client entry changes.
 try {
   require('../dist/client/assets/js/manifest.json');
 } catch {
-  // ignore — sync already warned
+  // Build may still be packing files; runtime read below handles it.
 }
 
-const { createRequestHandler } = require('expo-server/adapter/vercel');
+function readEntryUrl() {
+  try {
+    const url = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).entries?.[0]?.url;
+    return typeof url === 'string' && url.includes('/assets/js/entry-') ? url : null;
+  } catch {
+    return null;
+  }
+}
 
-module.exports = createRequestHandler({
+function rewriteEntryScripts(html, entryUrl) {
+  return html
+    .replace(/\/assets\/js\/entry-[a-f0-9]+\.js/g, entryUrl)
+    .replace(/\/_expo\/static\/js\/web\/entry-[a-f0-9]+\.js/g, entryUrl)
+    .replace(/\/expo\/static\/js\/web\/entry-[a-f0-9]+\.js/g, entryUrl);
+}
+
+const expoHandler = createRequestHandler({
   build: serverDir,
 });
+
+module.exports = async function handler(req, res) {
+  const entryUrl = readEntryUrl();
+  const pathName = (req.url || '').split('?')[0];
+  const patchHtml = Boolean(entryUrl) && !pathName.startsWith('/api/');
+
+  if (!patchHtml) {
+    return expoHandler(req, res);
+  }
+
+  const chunks = [];
+  let contentType = '';
+  const originalSetHeader = res.setHeader.bind(res);
+  const originalWrite = res.write.bind(res);
+  const originalEnd = res.end.bind(res);
+
+  res.setHeader = (name, value) => {
+    if (String(name).toLowerCase() === 'content-type') {
+      contentType = Array.isArray(value) ? value.join(';') : String(value);
+    }
+    return originalSetHeader(name, value);
+  };
+
+  res.write = (chunk, encoding, cb) => {
+    if (chunk == null) return true;
+    const buf = Buffer.isBuffer(chunk)
+      ? chunk
+      : Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8');
+    chunks.push(buf);
+    if (typeof encoding === 'function') encoding();
+    else if (typeof cb === 'function') cb();
+    return true;
+  };
+
+  res.end = (chunk, encoding, cb) => {
+    if (typeof chunk === 'function') {
+      cb = chunk;
+      chunk = undefined;
+      encoding = undefined;
+    } else if (typeof encoding === 'function') {
+      cb = encoding;
+      encoding = undefined;
+    }
+    if (chunk != null && chunk !== '') {
+      chunks.push(
+        Buffer.isBuffer(chunk)
+          ? chunk
+          : Buffer.from(chunk, typeof encoding === 'string' ? encoding : 'utf8')
+      );
+    }
+
+    const raw = Buffer.concat(chunks);
+    const isHtml =
+      contentType.includes('text/html') ||
+      raw.slice(0, 64).toString('utf8').includes('<html');
+
+    if (isHtml && entryUrl) {
+      const html = rewriteEntryScripts(raw.toString('utf8'), entryUrl);
+      const out = Buffer.from(html, 'utf8');
+      try {
+        originalSetHeader('content-length', String(out.length));
+      } catch {
+        // headers may already be sent
+      }
+      return originalEnd(out, cb);
+    }
+
+    if (raw.length) originalWrite(raw);
+    return originalEnd(cb);
+  };
+
+  return expoHandler(req, res);
+};

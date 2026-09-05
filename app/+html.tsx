@@ -61,29 +61,49 @@ if ('serviceWorker' in navigator) {
 }
 `;
 
-// Keep the deferred Expo entry script pointed at the published hash from
-// /assets/js/manifest.json. Do not replace the whole page on failure — that
-// made recoveries harder when CDN and SSR briefly drifted.
+// Keep the deferred Expo entry script on the live CDN URL. Replacing the
+// <script> node (not only src) is required after a 404 — browsers will not
+// reload a failed deferred script when only the attribute changes.
 const ensureClientEntry = `
 (function () {
+  var STABLE = '/assets/js/entry.js';
+  function isEntrySrc(src) {
+    return (
+      src.indexOf('/assets/js/entry') === 0 ||
+      src.indexOf('/_expo/static/js/web/entry-') === 0 ||
+      src.indexOf('/expo/static/js/web/entry-') === 0
+    );
+  }
   function apply(url) {
     if (!url) return;
-    var scripts = document.querySelectorAll('script[src*="entry-"]');
+    var scripts = document.querySelectorAll('script[src*="entry"]');
     for (var i = 0; i < scripts.length; i++) {
-      var src = scripts[i].getAttribute('src') || '';
-      if (src.indexOf('/assets/js/entry-') === 0 || src.indexOf('/_expo/static/js/web/entry-') === 0 || src.indexOf('/expo/static/js/web/entry-') === 0) {
-        if (src !== url) scripts[i].setAttribute('src', url);
-      }
+      var old = scripts[i];
+      var src = old.getAttribute('src') || '';
+      if (!isEntrySrc(src) || src === url) continue;
+      var next = document.createElement('script');
+      next.src = url;
+      next.defer = true;
+      old.parentNode.insertBefore(next, old);
+      old.parentNode.removeChild(old);
     }
   }
-  try {
-    fetch('/assets/js/manifest.json', { cache: 'no-store' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (m) {
-        var url = m && m.entries && m.entries[0] && m.entries[0].url;
-        apply(url);
-      })
-      .catch(function () {});
-  } catch (e) {}
+  function sync() {
+    apply(STABLE);
+    try {
+      fetch('/assets/js/manifest.json', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (m) {
+          var url = (m && m.entryUrl) || (m && m.entries && m.entries[0] && m.entries[0].url) || STABLE;
+          apply(url);
+        })
+        .catch(function () {});
+    } catch (e) {}
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', sync);
+  } else {
+    sync();
+  }
 })();
 `;

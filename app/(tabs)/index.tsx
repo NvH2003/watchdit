@@ -466,9 +466,11 @@ export default function EpisodesScreen() {
       <ShowRowTV
         key={item.id}
         id={item.id}
+        tmdbShowId={item.tmdbShowId as number}
         name={item.tmdbShowName as string}
         posterPath={item.tmdbPosterPath as string | null}
         status={(item.status as ShowStatus) ?? 'watching'}
+        originalLanguage={(item.tmdbOriginalLanguage as string | undefined) || undefined}
         nextSeasonNum={item.nextSeasonNum as number | null | undefined}
         nextEpisodeNum={item.nextEpisodeNum as number | null | undefined}
         nextEpisodeName={item.nextEpisodeName as string | null | undefined}

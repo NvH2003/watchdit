@@ -19,7 +19,9 @@ import { progressUpdates, hasAired, isFutureAirDate, findProgressFromTmdb } from
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from '@/lib/stats';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
+import EpisodeDetailModal from '@/components/EpisodeDetailModal';
 import { uniqueByTmdbShowId, createUserShowTx, activateShowWatching } from '@/lib/userShows';
+import { fetchLongerEpisodeOverview } from '@/lib/episodeOverview';
 
 type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
 
@@ -43,6 +45,9 @@ export default function ShowDetailScreen() {
   const [loadingShow, setLoadingShow] = useState(true);
   const [expandedSeason, setExpandedSeason] = useState<number | null>(null);
   const autoOpenedForShow = useRef<number | null>(null);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [episodeModal, setEpisodeModal] = useState<TmdbEpisode | null>(null);
+  const [episodeModalLoading, setEpisodeModalLoading] = useState(false);
   const [confirm, setConfirm] = useState<{
     title: string;
     message: string;
@@ -70,6 +75,19 @@ export default function ShowDetailScreen() {
   const watchedSet = new Set(
     watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
   );
+
+  useEffect(() => {
+    if (!user || watchedEps.length === 0) return;
+    const seen = new Set<string>();
+    const extras: string[] = [];
+    for (const e of watchedEps) {
+      const key = `${e.seasonNumber}x${e.episodeNumber}`;
+      if (seen.has(key)) extras.push(e.id);
+      else seen.add(key);
+    }
+    if (extras.length === 0) return;
+    db.transact(extras.map(eid => db.tx.watchedEpisodes[eid].delete())).catch(() => {});
+  }, [user, watchedEps]);
 
   function askConfirm(
     title: string,
@@ -116,7 +134,11 @@ export default function ShowDetailScreen() {
         ? eps.filter(ep => hasAired(ep.air_date)).length
         : s.episode_count ?? 0;
       if (expected === 0) return false;
-      const watched = watchedEps.filter(e => e.seasonNumber === s.season_number).length;
+      const watched = new Set(
+        watchedEps
+          .filter(e => e.seasonNumber === s.season_number)
+          .map(e => e.episodeNumber)
+      ).size;
       return watched < expected;
     });
   }
@@ -204,8 +226,64 @@ export default function ShowDetailScreen() {
     ensureSeason(seasonNum);
   }
 
+  async function enrichEpisodeOverview(seasonNum: number, ep: TmdbEpisode) {
+    const current = ep.overview?.trim() ?? '';
+    setEpisodeModalLoading(true);
+    try {
+      const extras = await fetchLongerEpisodeOverview({
+        showId,
+        season: seasonNum,
+        episode: ep.episode_number,
+        current,
+        originalLanguage: show?.original_language,
+      });
+      const best = extras.overview;
+      setEpisodeModal(prev =>
+        prev && prev.season_number === seasonNum && prev.episode_number === ep.episode_number
+          ? {
+              ...prev,
+              overview: best || prev.overview,
+              still_path: extras.stillPath || prev.still_path,
+              name: extras.name || prev.name,
+              runtime: extras.runtime ?? prev.runtime,
+              air_date: extras.airDate || prev.air_date,
+              vote_average: extras.voteAverage ?? prev.vote_average,
+            }
+          : prev
+      );
+      if (best.length <= current.length && !extras.stillPath) return;
+      setEpisodesBySeason(prev => {
+        const list = prev[seasonNum];
+        if (!list) return prev;
+        return {
+          ...prev,
+          [seasonNum]: list.map(e =>
+            e.episode_number === ep.episode_number
+              ? {
+                  ...e,
+                  overview: best || e.overview,
+                  still_path: extras.stillPath || e.still_path,
+                  vote_average: extras.voteAverage ?? e.vote_average,
+                }
+              : e
+          ),
+        };
+      });
+    } catch (e) {
+      console.warn('Failed to load episode overview', e);
+    } finally {
+      setEpisodeModalLoading(false);
+    }
+  }
+
+  function openEpisodeModal(seasonNum: number, ep: TmdbEpisode) {
+    setEpisodeModal(ep);
+    enrichEpisodeOverview(seasonNum, ep);
+  }
+
   useEffect(() => {
     autoOpenedForShow.current = null;
+    setEpisodeModal(null);
   }, [showId]);
 
   useEffect(() => {
@@ -223,14 +301,14 @@ export default function ShowDetailScreen() {
 
   async function toggleEpisode(seasonNum: number, episodeNum: number, airDate?: string) {
     if (!user) return;
-    const existing = watchedEps.find(
+    const existing = watchedEps.filter(
       e => e.seasonNumber === seasonNum && e.episodeNumber === episodeNum
     );
-    const isMarking = !existing;
+    const isMarking = existing.length === 0;
     if (isMarking && !hasAired(airDate)) return;
 
-    if (existing) {
-      await db.transact([db.tx.watchedEpisodes[existing.id].delete()]);
+    if (existing.length > 0) {
+      await db.transact(existing.map(e => db.tx.watchedEpisodes[e.id].delete()));
     } else {
       const ep = episodesBySeason[seasonNum]?.find(e => e.episode_number === episodeNum);
       const runtime = episodeRuntimeMinutes(ep?.runtime);
@@ -289,10 +367,18 @@ export default function ShowDetailScreen() {
     episodes: { season: number; ep: number; runtime?: number | null }[]
   ) {
     if (!user || episodes.length === 0) return;
+    const seen = new Set(watchedSet);
+    const unique = episodes.filter(item => {
+      const key = `${item.season}x${item.ep}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (unique.length === 0) return;
     const now = new Date().toISOString();
     const CHUNK = 40;
-    for (let i = 0; i < episodes.length; i += CHUNK) {
-      const chunk = episodes.slice(i, i + CHUNK);
+    for (let i = 0; i < unique.length; i += CHUNK) {
+      const chunk = unique.slice(i, i + CHUNK);
       await db.transact(
         chunk.map(item =>
           db.tx.watchedEpisodes[instantId()].update({
@@ -407,8 +493,93 @@ export default function ShowDetailScreen() {
     }
   }
 
-  async function setStatus(status: ShowStatus) {
+  async function collectAllAiredUnwatched(): Promise<
+    { season: number; ep: number; runtime?: number | null }[]
+  > {
+    const toAdd: { season: number; ep: number; runtime?: number | null }[] = [];
+    for (const s of seasonMeta) {
+      if (s.season_number <= 0) continue;
+      toAdd.push(...(await collectAiredUnwatched(s.season_number)));
+    }
+    return toAdd;
+  }
+
+  async function createShowOnList(status: ShowStatus): Promise<string | null> {
+    if (!user || !show) return null;
+    const now = new Date().toISOString();
+    const provisionalAir = show.first_air_date || '';
+    const episodeRuntime = averageEpisodeRuntime(show.episode_run_time);
+    const { entityId, tx } = createUserShowTx(user.id, {
+      tmdbShowId: show.id,
+      tmdbShowName: show.name,
+      tmdbPosterPath: show.poster_path ?? '',
+      status,
+      addedAt: now,
+      lastTouchedAt: now,
+      tmdbOriginalLanguage: show.original_language ?? '',
+      nextSeasonNum: 1,
+      nextEpisodeNum: 1,
+      nextEpisodeName: '',
+      nextEpisodeAirDate: provisionalAir,
+      nextEpisodeStillPath: '',
+      totalEpisodes: show.number_of_episodes ?? 0,
+      ...(episodeRuntime != null ? { episodeRuntime } : {}),
+    });
+    await db.transact([tx]);
+    return entityId;
+  }
+
+  async function applyProgress(
+    userShowId: string,
+    watchedKeys: Set<string>,
+    extra?: Record<string, unknown>
+  ) {
+    const progress = await findProgressFromTmdb(showId, watchedKeys, 1);
+    const updates: Record<string, unknown> = {
+      ...progressUpdates(progress),
+      lastTouchedAt: new Date().toISOString(),
+      ...extra,
+    };
+    await db.transact([db.tx.userShows[userShowId].update(updates)]);
+  }
+
+  async function markShowUpToDate() {
     if (!user) return;
+    const toAdd = await collectAllAiredUnwatched();
+    await writeWatched(toAdd);
+
+    const watched = new Set(
+      watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+    );
+    for (const item of toAdd) watched.add(`${item.season}x${item.ep}`);
+
+    const episodeRuntime = show
+      ? averageEpisodeRuntime(show.episode_run_time)
+      : null;
+    const extra: Record<string, unknown> = {};
+    if (show?.original_language) {
+      extra.tmdbOriginalLanguage = show.original_language;
+    }
+    if (episodeRuntime != null) extra.episodeRuntime = episodeRuntime;
+
+    const userShowId = userShow?.id ?? (await createShowOnList('upToDate'));
+    if (!userShowId) return;
+    await applyProgress(userShowId, watched, extra);
+  }
+
+  async function setStatus(status: ShowStatus) {
+    if (!user || statusBusy) return;
+    if (status === 'upToDate') {
+      setStatusBusy(true);
+      try {
+        await markShowUpToDate();
+      } catch (e) {
+        console.warn('Failed to mark show up to date', e);
+      } finally {
+        setStatusBusy(false);
+      }
+      return;
+    }
     if (userShow) {
       const fromWatchLater = userShow.status === 'watchLater';
       if (status === 'watching') {
@@ -432,26 +603,9 @@ export default function ShowDetailScreen() {
       }
       await db.transact([db.tx.userShows[userShow.id].update({ status })]);
     } else if (show) {
-      const now = new Date().toISOString();
-      const provisionalAir = show.first_air_date || '';
+      const entityId = await createShowOnList(status);
+      if (!entityId) return;
       const episodeRuntime = averageEpisodeRuntime(show.episode_run_time);
-      const { entityId, tx } = createUserShowTx(user.id, {
-        tmdbShowId: show.id,
-        tmdbShowName: show.name,
-        tmdbPosterPath: show.poster_path ?? '',
-        status,
-        addedAt: now,
-        lastTouchedAt: now,
-        tmdbOriginalLanguage: show.original_language ?? '',
-        nextSeasonNum: 1,
-        nextEpisodeNum: 1,
-        nextEpisodeName: '',
-        nextEpisodeAirDate: provisionalAir,
-        nextEpisodeStillPath: '',
-        totalEpisodes: show.number_of_episodes ?? 0,
-        ...(episodeRuntime != null ? { episodeRuntime } : {}),
-      });
-      await db.transact([tx]);
       findProgressFromTmdb(show.id, new Set(), 1)
         .then(progress => {
           const updates = progressUpdates(progress);
@@ -598,21 +752,27 @@ export default function ShowDetailScreen() {
             {STATUS_OPTIONS.map(({ key, label }) => (
               <TouchableOpacity
                 key={key}
+                disabled={statusBusy}
                 style={[
                   styles.statusBtn,
                   userShow?.status === key &&
                     (key === 'finished' ? styles.statusBtnDone : styles.statusBtnActive),
+                  statusBusy && styles.statusBtnBusy,
                 ]}
                 onPress={() => setStatus(key)}
               >
-                <Text
-                  style={[
-                    styles.statusBtnText,
-                    userShow?.status === key && styles.statusBtnTextActive,
-                  ]}
-                >
-                  {label}
-                </Text>
+                {statusBusy && key === 'upToDate' ? (
+                  <ActivityIndicator color={theme.accent} size="small" />
+                ) : (
+                  <Text
+                    style={[
+                      styles.statusBtnText,
+                      userShow?.status === key && styles.statusBtnTextActive,
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                )}
               </TouchableOpacity>
             ))}
           </View>
@@ -629,9 +789,14 @@ export default function ShowDetailScreen() {
             {seasonMeta.map(season => {
               const eps = episodesBySeason[season.season_number];
               const total = eps?.length || season.episode_count || 0;
-              const watchedCount = watchedEps.filter(
-                e => e.seasonNumber === season.season_number
-              ).length;
+              const uniqueWatched = new Set(
+                watchedEps
+                  .filter(e => e.seasonNumber === season.season_number)
+                  .map(e => Number(e.episodeNumber))
+              );
+              const watchedCount = eps
+                ? eps.filter(ep => uniqueWatched.has(ep.episode_number)).length
+                : uniqueWatched.size;
               const airedEps = (eps ?? []).filter(ep => hasAired(ep.air_date));
               const watchedAiredCount = airedEps.filter(ep =>
                 watchedSet.has(`${season.season_number}x${ep.episode_number}`)
@@ -709,26 +874,65 @@ export default function ShowDetailScreen() {
                           ? `Out ${airDateLabel}`
                           : 'Not out yet'
                         : airDateLabel ?? '';
-                      const row = (
-                        <>
-                          <View style={styles.epStillWrap}>
-                            {still ? (
-                              <Image
-                                source={{ uri: still }}
-                                style={[styles.epStill, watched && styles.epStillWatched]}
-                              />
-                            ) : (
-                              <View style={[styles.epStill, styles.epStillPlaceholder]} />
-                            )}
-                            <View style={styles.epStillCheck}>
-                              {aired || watched ? (
-                                <EpisodeCheck watched={watched} size={22} />
+                      const overview = ep.overview?.trim() ?? '';
+                      const canToggleWatch = aired || watched;
+                      return (
+                        <View
+                          key={ep.id}
+                          style={[
+                            styles.episodeRow,
+                            watched && styles.episodeRowWatched,
+                            !aired && !watched && styles.episodeRowUpcoming,
+                          ]}
+                        >
+                          {canToggleWatch ? (
+                            <TouchableOpacity
+                              onPress={() =>
+                                toggleEpisode(
+                                  season.season_number,
+                                  ep.episode_number,
+                                  ep.air_date
+                                )
+                              }
+                              activeOpacity={0.7}
+                              accessibilityLabel={
+                                watched ? 'Mark episode unwatched' : 'Mark episode watched'
+                              }
+                            >
+                              <View style={styles.epStillWrap}>
+                                {still ? (
+                                  <Image
+                                    source={{ uri: still }}
+                                    style={[styles.epStill, watched && styles.epStillWatched]}
+                                  />
+                                ) : (
+                                  <View style={[styles.epStill, styles.epStillPlaceholder]} />
+                                )}
+                                <View style={styles.epStillCheck}>
+                                  <EpisodeCheck watched={watched} size={22} />
+                                </View>
+                              </View>
+                            </TouchableOpacity>
+                          ) : (
+                            <View
+                              style={styles.epStillWrap}
+                              accessibilityLabel="This episode isn't out yet"
+                            >
+                              {still ? (
+                                <Image source={{ uri: still }} style={styles.epStill} />
                               ) : (
-                                <View style={styles.upcomingDot} />
+                                <View style={[styles.epStill, styles.epStillPlaceholder]} />
                               )}
+                              <View style={styles.epStillCheck}>
+                                <View style={styles.upcomingDot} />
+                              </View>
                             </View>
-                          </View>
-                          <View style={styles.epInfo}>
+                          )}
+                          <TouchableOpacity
+                            style={styles.epInfo}
+                            onPress={() => openEpisodeModal(season.season_number, ep)}
+                            activeOpacity={0.7}
+                          >
                             <Text
                               style={[
                                 styles.epTitle,
@@ -741,38 +945,13 @@ export default function ShowDetailScreen() {
                               {runtimeLabel ? ` · ${runtimeLabel}` : ''}
                             </Text>
                             {dateLine ? <Text style={styles.epDate}>{dateLine}</Text> : null}
-                          </View>
-                        </>
-                      );
-                      if (!aired && !watched) {
-                        return (
-                          <View
-                            key={ep.id}
-                            style={[styles.episodeRow, styles.episodeRowUpcoming]}
-                            accessibilityLabel="This episode isn't out yet"
-                          >
-                            {row}
-                          </View>
-                        );
-                      }
-                      return (
-                        <TouchableOpacity
-                          key={ep.id}
-                          style={[
-                            styles.episodeRow,
-                            watched && styles.episodeRowWatched,
-                          ]}
-                          onPress={() =>
-                            toggleEpisode(
-                              season.season_number,
-                              ep.episode_number,
-                              ep.air_date
-                            )
-                          }
-                          activeOpacity={0.7}
-                        >
-                          {row}
-                        </TouchableOpacity>
+                            {overview ? (
+                              <Text style={styles.epOverview} numberOfLines={3}>
+                                {overview}
+                              </Text>
+                            ) : null}
+                          </TouchableOpacity>
+                        </View>
                       );
                     })}
                 </View>
@@ -781,6 +960,21 @@ export default function ShowDetailScreen() {
           </View>
         )}
       </ScrollView>
+      <EpisodeDetailModal
+        visible={episodeModal != null}
+        onClose={() => setEpisodeModal(null)}
+        onShowPress={() => setEpisodeModal(null)}
+        showName={show?.name}
+        seasonNumber={episodeModal?.season_number}
+        episodeNumber={episodeModal?.episode_number}
+        name={episodeModal?.name}
+        airDate={episodeModal?.air_date}
+        runtime={episodeModal?.runtime}
+        voteAverage={episodeModal?.vote_average}
+        stillPath={episodeModal?.still_path}
+        overview={episodeModal?.overview}
+        loading={episodeModalLoading}
+      />
       <Modal
         visible={confirm != null}
         transparent
@@ -974,6 +1168,9 @@ const styles = StyleSheet.create({
     backgroundColor: theme.check,
     borderColor: theme.check,
   },
+  statusBtnBusy: {
+    opacity: 0.6,
+  },
   statusBtnText: {
     color: theme.muted,
     fontSize: 13,
@@ -1117,7 +1314,7 @@ const styles = StyleSheet.create({
   },
   episodeRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderTopWidth: 1,
@@ -1182,5 +1379,11 @@ const styles = StyleSheet.create({
     color: theme.muted,
     fontSize: 11,
     marginTop: 2,
+  },
+  epOverview: {
+    color: theme.muted,
+    fontSize: 12,
+    lineHeight: 16,
+    marginTop: 4,
   },
 });

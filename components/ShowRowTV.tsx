@@ -15,14 +15,18 @@ import Swipeable from 'react-native-gesture-handler/Swipeable';
 import { posterUrl, stillUrl, formatAirsLabel, formatRuntime } from '@/lib/tmdb';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
+import EpisodeDetailModal from '@/components/EpisodeDetailModal';
+import { fetchLongerEpisodeOverview } from '@/lib/episodeOverview';
 
 export type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
 
 interface ShowRowTVProps {
   id: string;
+  tmdbShowId: number;
   name: string;
   posterPath: string | null | undefined;
   status: ShowStatus;
+  originalLanguage?: string | null;
   nextSeasonNum?: number | null;
   nextEpisodeNum?: number | null;
   nextEpisodeName?: string | null;
@@ -100,9 +104,11 @@ function OverflowMenu({
 
 export default function ShowRowTV({
   id,
+  tmdbShowId,
   name,
   posterPath,
   status,
+  originalLanguage,
   nextSeasonNum,
   nextEpisodeNum,
   nextEpisodeName,
@@ -120,6 +126,13 @@ export default function ShowRowTV({
   const swipeRef = useRef<Swipeable>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [marking, setMarking] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailOverview, setDetailOverview] = useState('');
+  const [detailStill, setDetailStill] = useState(nextEpisodeStillPath ?? '');
+  const [detailName, setDetailName] = useState(nextEpisodeName ?? '');
+  const [detailRuntime, setDetailRuntime] = useState(nextEpisodeRuntime ?? null);
+  const [detailVote, setDetailVote] = useState<number | null>(null);
   const poster = posterUrl(posterPath, 'w185');
   const still = stillUrl(nextEpisodeStillPath, 'w185');
   const thumb = still ?? poster;
@@ -150,10 +163,37 @@ export default function ShowRowTV({
     onRemove(id);
   }
 
+  async function openEpisodeDetail() {
+    setDetailOpen(true);
+    setDetailOverview('');
+    setDetailStill(nextEpisodeStillPath ?? '');
+    setDetailName(nextEpisodeName ?? '');
+    setDetailRuntime(nextEpisodeRuntime ?? null);
+    setDetailVote(null);
+    setDetailLoading(true);
+    try {
+      const extras = await fetchLongerEpisodeOverview({
+        showId: tmdbShowId,
+        season: nextSeasonNum ?? 1,
+        episode: nextEpisodeNum ?? 1,
+        originalLanguage,
+      });
+      setDetailOverview(extras.overview);
+      if (extras.stillPath) setDetailStill(extras.stillPath);
+      if (extras.name) setDetailName(extras.name);
+      if (extras.runtime != null) setDetailRuntime(extras.runtime);
+      if (extras.voteAverage != null) setDetailVote(extras.voteAverage);
+    } catch {
+      setDetailOverview('');
+    } finally {
+      setDetailLoading(false);
+    }
+  }
+
   const rowContent = (
     <View style={styles.row}>
       {/* Poster */}
-      <TouchableOpacity onPress={onShowPress} activeOpacity={0.8}>
+      <TouchableOpacity onPress={openEpisodeDetail} activeOpacity={0.8}>
         <View style={still ? styles.stillWrap : styles.posterWrap}>
           {thumb ? (
             <Image source={{ uri: thumb }} style={still ? styles.still : styles.poster} />
@@ -178,22 +218,24 @@ export default function ShowRowTV({
           </Text>
         </TouchableOpacity>
 
-        <View style={styles.epRow}>
-          <Text style={styles.epCode}>{epCode}</Text>
-          {remaining > 0 && (
-            <Text style={styles.remaining}> +{remaining}</Text>
-          )}
-        </View>
+        <TouchableOpacity onPress={openEpisodeDetail} activeOpacity={0.7}>
+          <View style={styles.epRow}>
+            <Text style={styles.epCode}>{epCode}</Text>
+            {remaining > 0 && (
+              <Text style={styles.remaining}> +{remaining}</Text>
+            )}
+          </View>
 
-        {nextEpisodeName || runtimeLabel ? (
-          <Text style={styles.epName} numberOfLines={1}>
-            {nextEpisodeName || 'Episode'}
-            {runtimeLabel ? ` · ${runtimeLabel}` : ''}
-          </Text>
-        ) : null}
-        {airsLabel ? (
-          <Text style={styles.airsLabel}>{airsLabel}</Text>
-        ) : null}
+          {nextEpisodeName || runtimeLabel ? (
+            <Text style={styles.epName} numberOfLines={1}>
+              {nextEpisodeName || 'Episode'}
+              {runtimeLabel ? ` · ${runtimeLabel}` : ''}
+            </Text>
+          ) : null}
+          {airsLabel ? (
+            <Text style={styles.airsLabel}>{airsLabel}</Text>
+          ) : null}
+        </TouchableOpacity>
       </View>
 
       {/* Right side actions */}
@@ -232,12 +274,29 @@ export default function ShowRowTV({
   );
 
   const menu = (
-    <OverflowMenu
-      visible={menuOpen}
-      onClose={() => setMenuOpen(false)}
-      onWatchLater={() => onStatusChange(id, 'watchLater')}
-      onRemove={() => onRemove(id)}
-    />
+    <>
+      <OverflowMenu
+        visible={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        onWatchLater={() => onStatusChange(id, 'watchLater')}
+        onRemove={() => onRemove(id)}
+      />
+      <EpisodeDetailModal
+        visible={detailOpen}
+        onClose={() => setDetailOpen(false)}
+        onShowPress={onShowPress}
+        showName={name}
+        seasonNumber={season}
+        episodeNumber={episode}
+        name={detailName || nextEpisodeName}
+        airDate={nextEpisodeAirDate}
+        runtime={detailRuntime ?? nextEpisodeRuntime ?? episodeRuntime}
+        voteAverage={detailVote}
+        stillPath={detailStill || nextEpisodeStillPath}
+        overview={detailOverview}
+        loading={detailLoading}
+      />
+    </>
   );
 
   if (Platform.OS === 'web') {

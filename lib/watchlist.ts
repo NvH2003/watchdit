@@ -33,14 +33,19 @@ export function lastWatchedAt(
 }
 
 export function watchedCount(
-  watchedEps: { tmdbShowId?: unknown }[],
+  watchedEps: {
+    tmdbShowId?: unknown;
+    seasonNumber?: unknown;
+    episodeNumber?: unknown;
+  }[],
   tmdbShowId: number
 ): number {
-  let n = 0;
+  const keys = new Set<string>();
   for (const e of watchedEps) {
-    if (e.tmdbShowId === tmdbShowId) n++;
+    if (e.tmdbShowId !== tmdbShowId) continue;
+    keys.add(`${e.seasonNumber}x${e.episodeNumber}`);
   }
-  return n;
+  return keys.size;
 }
 
 /** Sort key: explicit last edit, else last watch, else date added. */

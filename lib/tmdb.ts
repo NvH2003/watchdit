@@ -46,6 +46,7 @@ export interface TmdbEpisode {
   still_path: string | null;
   /** Episode length in minutes when TMDB has it. */
   runtime?: number | null;
+  vote_average?: number | null;
 }
 
 export interface TmdbSeason {
@@ -155,6 +156,14 @@ export const tmdb = {
       language ? { language } : {}
     ),
 
+  getEpisodeTranslations: (showId: number, seasonNumber: number, episodeNumber: number) =>
+    get<{
+      translations: {
+        iso_639_1: string;
+        data?: { name?: string; overview?: string };
+      }[];
+    }>(`/tv/${showId}/season/${seasonNumber}/episode/${episodeNumber}/translations`),
+
   getSeasons: async (
     showId: number,
     totalSeasons: number,
@@ -221,6 +230,20 @@ export function formatAirsLabel(iso?: string | null): string | null {
   air.setHours(0, 0, 0, 0);
   if (air.getTime() <= today.getTime()) return null;
   return `Airs ${air.getDate()} ${MONTHS[air.getMonth()]}`;
+}
+
+/** Display TMDB date as "25 Oct 2024". */
+export function formatPrettyDate(iso?: string | null): string | null {
+  if (!iso) return null;
+  const day = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (day) {
+    const month = MONTHS[Number(day[2]) - 1];
+    if (!month) return formatEuropeanDate(iso);
+    return `${Number(day[3])} ${month} ${day[1]}`;
+  }
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getDate()} ${MONTHS[d.getMonth()]} ${d.getFullYear()}`;
 }
 
 export function formatRuntime(minutes?: number | null): string | null {

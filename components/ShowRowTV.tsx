@@ -17,6 +17,7 @@ import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
 import EpisodeDetailModal from '@/components/EpisodeDetailModal';
 import { fetchLongerEpisodeOverview } from '@/lib/episodeOverview';
+import { isFutureAirDate } from '@/lib/progress';
 
 export type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
 
@@ -37,6 +38,7 @@ interface ShowRowTVProps {
   episodeRuntime?: number | null;
   remainingCount?: number;
   canMark?: boolean;
+  daysEarly?: number;
   onShowPress: () => void;
   onCheckPress: () => void;
   onStatusChange: (id: string, status: ShowStatus) => void;
@@ -118,6 +120,7 @@ export default function ShowRowTV({
   episodeRuntime,
   remainingCount,
   canMark = true,
+  daysEarly = 0,
   onShowPress,
   onCheckPress,
   onStatusChange,
@@ -141,7 +144,9 @@ export default function ShowRowTV({
   const episode = nextEpisodeNum ?? 1;
   const epCode = `S${String(season).padStart(2, '0')} | E${String(episode).padStart(2, '0')}`;
   const remaining = remainingCount ?? 0;
-  const airsLabel = formatAirsLabel(nextEpisodeAirDate);
+  const airsLabel = isFutureAirDate(nextEpisodeAirDate, daysEarly)
+    ? formatAirsLabel(nextEpisodeAirDate)
+    : null;
   const runtimeLabel = formatRuntime(nextEpisodeRuntime) ?? formatRuntime(episodeRuntime);
 
   useEffect(() => {

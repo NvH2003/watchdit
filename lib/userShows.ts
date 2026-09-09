@@ -7,6 +7,7 @@ import {
   localDayKey,
   msUntilNextLocalMidnight,
   progressUpdates,
+  clampEarlyAccessDays,
 } from './progress';
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
@@ -28,11 +29,13 @@ export async function activateShowWatching(opts: {
   fromWatchLater?: boolean;
   startSeason?: number;
   originalLanguage?: string;
+  daysEarly?: number;
 }): Promise<void> {
   const progress = await findProgressFromTmdb(
     opts.tmdbShowId,
     opts.watchedKeys,
-    opts.startSeason ?? 1
+    opts.startSeason ?? 1,
+    clampEarlyAccessDays(opts.daysEarly)
   );
   const updates: Record<string, unknown> = {
     ...progressUpdates(progress),
@@ -72,6 +75,7 @@ export function createUserShowTx(
     nextEpisodeAirDate?: string;
     nextEpisodeStillPath?: string;
     tvTimeSeriesId?: number;
+    earlyAccessDays?: number;
   }
 ) {
   const entityId = instantId();
@@ -268,7 +272,7 @@ export function usePromoteAiredUpToDate() {
         continue;
       }
 
-      if (s.status === 'upToDate' && hasAired(air) && nextKey) {
+      if (s.status === 'upToDate' && hasAired(air, clampEarlyAccessDays(s.earlyAccessDays)) && nextKey) {
         txs.push(db.tx.userShows[s.id].update({ status: 'watching' }));
       }
     }
@@ -389,8 +393,22 @@ export function useBackfillEpisodeRuntimes() {
           })
           // To watch (aired watching) first so the Episodes list fills sooner.
           .sort((a, b) => {
-            const aAired = a.status === 'watching' && hasAired(a.nextEpisodeAirDate as string | undefined) ? 0 : 1;
-            const bAired = b.status === 'watching' && hasAired(b.nextEpisodeAirDate as string | undefined) ? 0 : 1;
+            const aAired =
+              a.status === 'watching' &&
+              hasAired(
+                a.nextEpisodeAirDate as string | undefined,
+                clampEarlyAccessDays(a.earlyAccessDays)
+              )
+                ? 0
+                : 1;
+            const bAired =
+              b.status === 'watching' &&
+              hasAired(
+                b.nextEpisodeAirDate as string | undefined,
+                clampEarlyAccessDays(b.earlyAccessDays)
+              )
+                ? 0
+                : 1;
             return aAired - bAired;
           });
 

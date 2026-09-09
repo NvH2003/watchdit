@@ -15,7 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { id as instantId } from '@instantdb/react-native';
 import { tmdb, posterUrl, stillUrl, formatEuropeanDate, formatRuntime, TmdbShow, TmdbSeasonSummary, TmdbEpisode, TmdbWatchProvider, providerLogoUrl } from '@/lib/tmdb';
 import db from '@/lib/db';
-import { progressUpdates, hasAired, isFutureAirDate, findProgressFromTmdb } from '@/lib/progress';
+import { progressUpdates, hasAired, isFutureAirDate, findProgressFromTmdb, clampEarlyAccessDays } from '@/lib/progress';
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from '@/lib/stats';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
@@ -71,6 +71,7 @@ export default function ShowDetailScreen() {
   );
 
   const userShow = uniqueByTmdbShowId(dbData?.userShows ?? [])[0] ?? null;
+  const daysEarly = clampEarlyAccessDays(userShow?.earlyAccessDays);
   const watchedEps = dbData?.watchedEpisodes ?? [];
   const watchedSet = new Set(
     watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
@@ -109,9 +110,9 @@ export default function ShowDetailScreen() {
   function seasonLooksAvailable(s: TmdbSeasonSummary): boolean {
     if (s.season_number <= 0) return false;
     const eps = episodesBySeason[s.season_number];
-    if (eps) return eps.some(ep => hasAired(ep.air_date));
-    if (hasAired(s.air_date)) return true;
-    if (s.episode_count > 0 && s.air_date && !isFutureAirDate(s.air_date)) return true;
+    if (eps) return eps.some(ep => hasAired(ep.air_date, daysEarly));
+    if (hasAired(s.air_date, daysEarly)) return true;
+    if (s.episode_count > 0 && s.air_date && !isFutureAirDate(s.air_date, daysEarly)) return true;
     return false;
   }
 
@@ -131,7 +132,7 @@ export default function ShowDetailScreen() {
       if (!seasonLooksAvailable(s) && (s.episode_count ?? 0) === 0) return false;
       const eps = episodesBySeason[s.season_number];
       const expected = eps
-        ? eps.filter(ep => hasAired(ep.air_date)).length
+        ? eps.filter(ep => hasAired(ep.air_date, daysEarly)).length
         : s.episode_count ?? 0;
       if (expected === 0) return false;
       const watched = new Set(
@@ -305,7 +306,7 @@ export default function ShowDetailScreen() {
       e => e.seasonNumber === seasonNum && e.episodeNumber === episodeNum
     );
     const isMarking = existing.length === 0;
-    if (isMarking && !hasAired(airDate)) return;
+    if (isMarking && !hasAired(airDate, daysEarly)) return;
 
     if (existing.length > 0) {
       await db.transact(existing.map(e => db.tx.watchedEpisodes[e.id].delete()));
@@ -351,7 +352,7 @@ export default function ShowDetailScreen() {
       patch?.startSeason ?? (userShow?.nextSeasonNum as number | undefined) ?? 1
     );
 
-    findProgressFromTmdb(showId, watched, startSeason)
+    findProgressFromTmdb(showId, watched, startSeason, daysEarly)
       .then(progress => {
         if (!patch && userShow?.status === 'watchLater') return;
         const updates: Record<string, unknown> = progressUpdates(progress);
@@ -400,7 +401,7 @@ export default function ShowDetailScreen() {
     return eps
       .filter(
         ep =>
-          hasAired(ep.air_date) &&
+          hasAired(ep.air_date, daysEarly) &&
           !watchedSet.has(`${seasonNumber}x${ep.episode_number}`)
       )
       .map(ep => ({
@@ -523,6 +524,7 @@ export default function ShowDetailScreen() {
       nextEpisodeAirDate: provisionalAir,
       nextEpisodeStillPath: '',
       totalEpisodes: show.number_of_episodes ?? 0,
+      earlyAccessDays: daysEarly,
       ...(episodeRuntime != null ? { episodeRuntime } : {}),
     });
     await db.transact([tx]);
@@ -534,7 +536,7 @@ export default function ShowDetailScreen() {
     watchedKeys: Set<string>,
     extra?: Record<string, unknown>
   ) {
-    const progress = await findProgressFromTmdb(showId, watchedKeys, 1);
+    const progress = await findProgressFromTmdb(showId, watchedKeys, 1, daysEarly);
     const updates: Record<string, unknown> = {
       ...progressUpdates(progress),
       lastTouchedAt: new Date().toISOString(),
@@ -567,6 +569,29 @@ export default function ShowDetailScreen() {
     await applyProgress(userShowId, watched, extra);
   }
 
+  async function setEarlyAccessDays(next: number) {
+    if (!user) return;
+    const days = clampEarlyAccessDays(next);
+    if (days === daysEarly && userShow) return;
+    const userShowId = userShow?.id ?? (await createShowOnList('watching'));
+    if (!userShowId) return;
+    const watched = new Set(
+      watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+    );
+    try {
+      const progress = await findProgressFromTmdb(showId, watched, 1, days);
+      await db.transact([
+        db.tx.userShows[userShowId].update({
+          ...progressUpdates(progress),
+          earlyAccessDays: days,
+        }),
+      ]);
+    } catch (e) {
+      console.warn('Failed to set early access days', e);
+      await db.transact([db.tx.userShows[userShowId].update({ earlyAccessDays: days })]);
+    }
+  }
+
   async function setStatus(status: ShowStatus) {
     if (!user || statusBusy) return;
     if (status === 'upToDate') {
@@ -594,6 +619,7 @@ export default function ShowDetailScreen() {
             fromWatchLater,
             startSeason: 1,
             originalLanguage: show?.original_language ?? undefined,
+            daysEarly,
           });
         } catch (e) {
           console.warn('Failed to activate watching', e);
@@ -606,7 +632,7 @@ export default function ShowDetailScreen() {
       const entityId = await createShowOnList(status);
       if (!entityId) return;
       const episodeRuntime = averageEpisodeRuntime(show.episode_run_time);
-      findProgressFromTmdb(show.id, new Set(), 1)
+      findProgressFromTmdb(show.id, new Set(), 1, daysEarly)
         .then(progress => {
           const updates = progressUpdates(progress);
           // Keep an explicit Watch Later / Finished choice from the picker.
@@ -776,6 +802,28 @@ export default function ShowDetailScreen() {
               </TouchableOpacity>
             ))}
           </View>
+          <View style={styles.earlyRow}>
+            <Text style={styles.earlyLabel}>Watch early</Text>
+            <View style={styles.earlyStepper}>
+              <TouchableOpacity
+                style={[styles.earlyBtn, daysEarly <= 0 && styles.earlyBtnDisabled]}
+                onPress={() => setEarlyAccessDays(daysEarly - 1)}
+                disabled={daysEarly <= 0}
+              >
+                <Text style={styles.earlyBtnText}>−</Text>
+              </TouchableOpacity>
+              <Text style={styles.earlyValue}>
+                {daysEarly === 1 ? '1 day' : `${daysEarly} days`}
+              </Text>
+              <TouchableOpacity
+                style={[styles.earlyBtn, daysEarly >= 28 && styles.earlyBtnDisabled]}
+                onPress={() => setEarlyAccessDays(daysEarly + 1)}
+                disabled={daysEarly >= 28}
+              >
+                <Text style={styles.earlyBtnText}>+</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
           {userShow ? (
             <TouchableOpacity style={styles.removeBtn} onPress={removeFromList}>
               <Text style={styles.removeBtnText}>Remove from list</Text>
@@ -797,7 +845,7 @@ export default function ShowDetailScreen() {
               const watchedCount = eps
                 ? eps.filter(ep => uniqueWatched.has(ep.episode_number)).length
                 : uniqueWatched.size;
-              const airedEps = (eps ?? []).filter(ep => hasAired(ep.air_date));
+              const airedEps = (eps ?? []).filter(ep => hasAired(ep.air_date, daysEarly));
               const watchedAiredCount = airedEps.filter(ep =>
                 watchedSet.has(`${season.season_number}x${ep.episode_number}`)
               ).length;
@@ -865,7 +913,7 @@ export default function ShowDetailScreen() {
                       const watched = watchedSet.has(
                         `${season.season_number}x${ep.episode_number}`
                       );
-                      const aired = hasAired(ep.air_date);
+                      const aired = hasAired(ep.air_date, daysEarly);
                       const airDateLabel = formatEuropeanDate(ep.air_date);
                       const runtimeLabel = formatRuntime(ep.runtime);
                       const still = stillUrl(ep.still_path, 'w185');
@@ -1151,6 +1199,49 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
     marginBottom: 10,
+  },
+  earlyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    gap: 12,
+  },
+  earlyLabel: {
+    color: theme.muted,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  earlyStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  earlyBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: theme.border,
+    backgroundColor: theme.elevated,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  earlyBtnDisabled: {
+    opacity: 0.4,
+  },
+  earlyBtnText: {
+    color: theme.text,
+    fontSize: 18,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  earlyValue: {
+    color: theme.text,
+    fontSize: 13,
+    fontWeight: '600',
+    minWidth: 64,
+    textAlign: 'center',
   },
   statusBtn: {
     paddingHorizontal: 14,

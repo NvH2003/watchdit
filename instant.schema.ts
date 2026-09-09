@@ -27,6 +27,8 @@ const _schema = i.schema({
       tmdbOriginalLanguage: i.string().optional(),
       /** Average episode length in minutes (from TMDB episode_run_time). */
       episodeRuntime: i.number().optional(),
+      /** Days before TMDB air date the next episode counts as available. */
+      earlyAccessDays: i.number().optional(),
       ownerShowKey: i.string().unique().indexed().optional(),
     }),
     watchedEpisodes: i.entity({

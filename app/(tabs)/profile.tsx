@@ -26,7 +26,7 @@ import {
   formatWatchTime,
 } from '@/lib/history';
 import { computeWatchStats, formatDurationMinutes } from '@/lib/stats';
-import { readyForWatchlist } from '@/lib/progress';
+import { readyForWatchlist, clampEarlyAccessDays } from '@/lib/progress';
 import {
   bucketForShow,
   lastWatchedAt,
@@ -112,6 +112,7 @@ export default function ProfileScreen() {
           nextSeasonNum: s.nextSeasonNum as number | undefined,
           nextEpisodeNum: s.nextEpisodeNum as number | undefined,
           watchedKeys,
+          daysEarly: clampEarlyAccessDays(s.earlyAccessDays),
         }
       );
     });
@@ -278,6 +279,7 @@ export default function ProfileScreen() {
           watchedKeys,
           fromWatchLater: true,
           originalLanguage: show.tmdbOriginalLanguage as string | undefined,
+          daysEarly: clampEarlyAccessDays(show.earlyAccessDays),
         });
       }
     } catch (e) {

@@ -21,6 +21,8 @@ import {
   msUntilNextLocalMidnight,
   readyForWatchlist,
   readyForUpcoming,
+  clampEarlyAccessDays,
+  shiftAirDate,
 } from '@/lib/progress';
 import { episodeRuntimeMinutes } from '@/lib/stats';
 import { tmdb } from '@/lib/tmdb';
@@ -151,9 +153,9 @@ export default function EpisodesScreen() {
           );
         // Stale next pointer or newly aired upToDate — refresh from TMDB.
         if (nextWatched) return true;
-        if (s.status === 'upToDate' && hasAired(air)) return true;
+        if (s.status === 'upToDate' && hasAired(air, clampEarlyAccessDays(s.earlyAccessDays))) return true;
         // No known future episode — TMDB may have published a new one.
-        if (s.status === 'upToDate' && !isFutureAirDate(air)) return true;
+        if (s.status === 'upToDate' && !isFutureAirDate(air, clampEarlyAccessDays(s.earlyAccessDays))) return true;
         // Need next-episode runtime on To watch without opening the show.
         const nextRt = Number(s.nextEpisodeRuntime);
         if (
@@ -187,7 +189,12 @@ export default function EpisodesScreen() {
             if (i > 0 && i % 5 === 0) {
               await new Promise(r => setTimeout(r, 400));
             }
-            const progress = await findProgressFromTmdb(tmdbId, watched, startSeason);
+            const progress = await findProgressFromTmdb(
+              tmdbId,
+              watched,
+              startSeason,
+              clampEarlyAccessDays(show.earlyAccessDays)
+            );
             if (cancelled) return;
             await db.transact([
               db.tx.userShows[show.id].update(progressUpdates(progress)),
@@ -222,6 +229,7 @@ export default function EpisodesScreen() {
         nextSeasonNum: s.nextSeasonNum as number | undefined,
         nextEpisodeNum: s.nextEpisodeNum as number | undefined,
         watchedKeys,
+        daysEarly: clampEarlyAccessDays(s.earlyAccessDays),
       }
     );
   });
@@ -239,6 +247,7 @@ export default function EpisodesScreen() {
         nextSeasonNum: s.nextSeasonNum as number | undefined,
         nextEpisodeNum: s.nextEpisodeNum as number | undefined,
         watchedKeys,
+        daysEarly: clampEarlyAccessDays(s.earlyAccessDays),
       }
     );
   });
@@ -273,7 +282,10 @@ export default function EpisodesScreen() {
 
   const upcomingSections = useMemo(() => {
     const airOf = (show: (typeof allShows)[0]) =>
-      (show.nextEpisodeAirDate as string | undefined) ?? null;
+      shiftAirDate(
+        show.nextEpisodeAirDate as string | undefined,
+        clampEarlyAccessDays(show.earlyAccessDays)
+      );
 
     const buckets: Record<UpcomingBucket, typeof allShows> = {
       today: [],
@@ -326,6 +338,7 @@ export default function EpisodesScreen() {
           fromWatchLater: show.status === 'watchLater',
           startSeason: 1,
           originalLanguage: (show.tmdbOriginalLanguage as string | undefined) || undefined,
+          daysEarly: clampEarlyAccessDays(show.earlyAccessDays),
         });
         return;
       } catch (e) {
@@ -341,7 +354,7 @@ export default function EpisodesScreen() {
 
   async function handleCheck(show: (typeof allShows)[0]) {
     if (!user) return;
-    if (!hasAired(show.nextEpisodeAirDate as string | undefined)) return;
+    if (!hasAired(show.nextEpisodeAirDate as string | undefined, clampEarlyAccessDays(show.earlyAccessDays))) return;
     const sId = show.id;
     const tmdbId = show.tmdbShowId as number;
     const curSeason = (show.nextSeasonNum as number | undefined) ?? 1;
@@ -397,7 +410,12 @@ export default function EpisodesScreen() {
       );
       watched.add(`${curSeason}x${curEpisode}`);
 
-      const progress = await findProgressFromTmdb(tmdbId, watched, curSeason);
+      const progress = await findProgressFromTmdb(
+        tmdbId,
+        watched,
+        curSeason,
+        clampEarlyAccessDays(show.earlyAccessDays)
+      );
       await db.transact([
         ...transactions,
         db.tx.userShows[sId].update({
@@ -479,7 +497,11 @@ export default function EpisodesScreen() {
         nextEpisodeRuntime={item.nextEpisodeRuntime as number | null | undefined}
         episodeRuntime={item.episodeRuntime as number | null | undefined}
         remainingCount={getRemainingCount(item)}
-        canMark={hasAired(item.nextEpisodeAirDate as string | undefined)}
+        canMark={hasAired(
+          item.nextEpisodeAirDate as string | undefined,
+          clampEarlyAccessDays(item.earlyAccessDays)
+        )}
+        daysEarly={clampEarlyAccessDays(item.earlyAccessDays)}
         onShowPress={() => router.push(`/show/${item.tmdbShowId}`)}
         onCheckPress={() => handleCheck(item)}
         onStatusChange={handleStatusChange}

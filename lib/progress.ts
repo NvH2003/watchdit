@@ -13,19 +13,40 @@ export function parseAirDay(iso?: string | null): Date | null {
   return d;
 }
 
-/** True only when TMDB has a real air date that is today or earlier. Missing dates are not out. */
-export function hasAired(iso?: string | null): boolean {
+const MAX_EARLY_ACCESS_DAYS = 28;
+
+export function clampEarlyAccessDays(n: unknown): number {
+  const d = Number(n);
+  if (!Number.isFinite(d)) return 0;
+  return Math.max(0, Math.min(MAX_EARLY_ACCESS_DAYS, Math.round(d)));
+}
+
+/** TMDB air calendar day shifted earlier by `daysEarly`. */
+export function shiftAirDate(iso?: string | null, daysEarly = 0): string | null {
+  const air = parseAirDay(iso);
+  if (!air) return null;
+  air.setDate(air.getDate() - clampEarlyAccessDays(daysEarly));
+  const y = air.getFullYear();
+  const m = String(air.getMonth() + 1).padStart(2, '0');
+  const d = String(air.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/** True when the episode is available (TMDB air day minus daysEarly is today or earlier). */
+export function hasAired(iso?: string | null, daysEarly = 0): boolean {
   const air = parseAirDay(iso);
   if (!air) return false;
+  air.setDate(air.getDate() - clampEarlyAccessDays(daysEarly));
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return air.getTime() <= today.getTime();
 }
 
-/** True when TMDB has a real air date in the future (not a placeholder episode). */
-export function isFutureAirDate(iso?: string | null): boolean {
+/** True when the episode is not yet available given daysEarly. */
+export function isFutureAirDate(iso?: string | null, daysEarly = 0): boolean {
   const air = parseAirDay(iso);
   if (!air) return false;
+  air.setDate(air.getDate() - clampEarlyAccessDays(daysEarly));
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   return air.getTime() > today.getTime();
@@ -57,10 +78,11 @@ export function readyForWatchlist(
     nextSeasonNum?: number | null;
     nextEpisodeNum?: number | null;
     watchedKeys?: Set<string>;
+    daysEarly?: number;
   }
 ): boolean {
   if (status !== 'watching' && status !== 'upToDate') return false;
-  if (!hasAired(nextEpisodeAirDate)) return false;
+  if (!hasAired(nextEpisodeAirDate, opts?.daysEarly)) return false;
   const season = opts?.nextSeasonNum;
   const ep = opts?.nextEpisodeNum;
   if (
@@ -84,10 +106,11 @@ export function readyForUpcoming(
     nextSeasonNum?: number | null;
     nextEpisodeNum?: number | null;
     watchedKeys?: Set<string>;
+    daysEarly?: number;
   }
 ): boolean {
   if (status !== 'watching' && status !== 'upToDate') return false;
-  if (!isFutureAirDate(nextEpisodeAirDate)) return false;
+  if (!isFutureAirDate(nextEpisodeAirDate, opts?.daysEarly)) return false;
   const season = opts?.nextSeasonNum;
   const ep = opts?.nextEpisodeNum;
   if (
@@ -142,14 +165,15 @@ export type ProgressResult = {
 export function computeProgress(
   episodes: ProgressEpisode[],
   watched: Set<string>,
-  tmdbStatus?: string | null
+  tmdbStatus?: string | null,
+  daysEarly = 0
 ): ProgressResult {
   const unwatched = episodes.filter(
     e => e.season > 0 && !watched.has(`${e.season}x${e.ep}`)
   );
-  const unwatchedAired = unwatched.filter(e => hasAired(e.airDate));
+  const unwatchedAired = unwatched.filter(e => hasAired(e.airDate, daysEarly));
   const nextAired = unwatchedAired[0];
-  const nextFuture = unwatched.find(e => isFutureAirDate(e.airDate));
+  const nextFuture = unwatched.find(e => isFutureAirDate(e.airDate, daysEarly));
   const ended = isShowEnded(tmdbStatus);
 
   if (nextAired) {
@@ -223,7 +247,8 @@ export function remainingAfterCurrent(unwatchedAiredCount: number): number {
 export async function findProgressFromTmdb(
   tmdbShowId: number,
   watched: Set<string>,
-  startSeason = 1
+  startSeason = 1,
+  daysEarly = 0
 ): Promise<ProgressResult> {
   const details = await tmdb.getShow(tmdbShowId);
   const lang = details.original_language || undefined;
@@ -245,7 +270,7 @@ export async function findProgressFromTmdb(
 
   for (let s = from; s <= totalSeasons; s++) {
     const meta = seasonMeta.find(m => m.season_number === s);
-    if (meta && meta.episode_count === 0 && !isFutureAirDate(meta.air_date)) {
+    if (meta && meta.episode_count === 0 && !isFutureAirDate(meta.air_date, daysEarly)) {
       continue;
     }
 
@@ -256,7 +281,7 @@ export async function findProgressFromTmdb(
       if (watched.has(`${e.season_number}x${e.episode_number}`)) continue;
 
       const airDate = e.air_date ?? '';
-      if (hasAired(airDate)) {
+      if (hasAired(airDate, daysEarly)) {
         airedUnwatched.push({
           season_number: e.season_number,
           episode_number: e.episode_number,
@@ -268,7 +293,7 @@ export async function findProgressFromTmdb(
         continue;
       }
 
-      if (isFutureAirDate(airDate) && !nextFuture) {
+      if (isFutureAirDate(airDate, daysEarly) && !nextFuture) {
         nextFuture = {
           season_number: e.season_number,
           episode_number: e.episode_number,
@@ -285,9 +310,14 @@ export async function findProgressFromTmdb(
       seasonMeta.find(m => m.season_number === s)?.air_date ??
       '';
     const seasonTouched = eps.some(e =>
-      watched.has(`${e.season_number}x${e.episode_number}`) || hasAired(e.air_date)
+      watched.has(`${e.season_number}x${e.episode_number}`) || hasAired(e.air_date, daysEarly)
     );
-    if (airedUnwatched.length === 0 && !nextFuture && !seasonTouched && isFutureAirDate(seasonAir)) {
+    if (
+      airedUnwatched.length === 0 &&
+      !nextFuture &&
+      !seasonTouched &&
+      isFutureAirDate(seasonAir, daysEarly)
+    ) {
       nextFuture = {
         season_number: s,
         episode_number: 1,

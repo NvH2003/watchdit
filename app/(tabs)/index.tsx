@@ -23,6 +23,7 @@ import {
   readyForUpcoming,
   clampEarlyAccessDays,
   shiftAirDate,
+  trackFromOf,
 } from '@/lib/progress';
 import { episodeRuntimeMinutes } from '@/lib/stats';
 import { tmdb } from '@/lib/tmdb';
@@ -193,7 +194,8 @@ export default function EpisodesScreen() {
               tmdbId,
               watched,
               startSeason,
-              clampEarlyAccessDays(show.earlyAccessDays)
+              clampEarlyAccessDays(show.earlyAccessDays),
+              trackFromOf(show)
             );
             if (cancelled) return;
             await db.transact([
@@ -339,6 +341,7 @@ export default function EpisodesScreen() {
           startSeason: 1,
           originalLanguage: (show.tmdbOriginalLanguage as string | undefined) || undefined,
           daysEarly: clampEarlyAccessDays(show.earlyAccessDays),
+          clearTrackFrom: true,
         });
         return;
       } catch (e) {
@@ -414,7 +417,8 @@ export default function EpisodesScreen() {
         tmdbId,
         watched,
         curSeason,
-        clampEarlyAccessDays(show.earlyAccessDays)
+        clampEarlyAccessDays(show.earlyAccessDays),
+        trackFromOf(show)
       );
       await db.transact([
         ...transactions,

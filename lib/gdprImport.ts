@@ -39,7 +39,7 @@ export const GDPR_FILE_SPECS: GdprFileSpec[] = [
     label: 'tracking-prod-records-v2.csv',
     required: false,
     scopes: ['series', 'both'],
-    why: 'Last watched season/episode — marks every episode up to that point as seen.',
+    why: 'Per-episode check-ins and last watched season/episode.',
     match: (name, text) =>
       name.includes('tracking-prod-records-v2') || text.includes('most_recent_ep_watched'),
   },

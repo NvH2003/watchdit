@@ -40,10 +40,11 @@ import {
   UnmatchedMovie,
   isGdprBundle,
 } from '@/lib/gdprImport';
-import { findProgressFromTmdb, progressUpdates } from '@/lib/progress';
+import { findProgressFromTmdb, progressUpdates, deriveTrackFrom, TrackFrom } from '@/lib/progress';
 import { theme } from '@/constants/theme';
 import { createUserShowTx } from '@/lib/userShows';
 import { createUserMovieTx } from '@/lib/userMovies';
+import { transactWithRetry } from '@/lib/instantTransact';
 
 type Step =
   | 'scope'
@@ -59,7 +60,8 @@ type Step =
 
 type ResetTarget = 'series' | 'movies' | 'everything';
 
-const CHUNK_SIZE = 50;
+const CHUNK_SIZE = 20;
+const CHUNK_PAUSE_MS = 200;
 
 const SCOPE_OPTIONS: {
   value: ImportScope;
@@ -261,19 +263,22 @@ export default function ImportScreen() {
 
     try {
       for (const chunk of chunkArray(episodes, CHUNK_SIZE)) {
-        await db.transact(chunk.map(e => db.tx.watchedEpisodes[e.id].delete()));
+        await transactWithRetry(chunk.map(e => db.tx.watchedEpisodes[e.id].delete()));
         done += chunk.length;
         setImportProgress({ done, total: Math.max(total, 1) });
+        await new Promise(r => setTimeout(r, CHUNK_PAUSE_MS));
       }
       for (const chunk of chunkArray(shows, CHUNK_SIZE)) {
-        await db.transact(chunk.map(s => db.tx.userShows[s.id].delete()));
+        await transactWithRetry(chunk.map(s => db.tx.userShows[s.id].delete()));
         done += chunk.length;
         setImportProgress({ done, total: Math.max(total, 1) });
+        await new Promise(r => setTimeout(r, CHUNK_PAUSE_MS));
       }
       for (const chunk of chunkArray(movies, CHUNK_SIZE)) {
-        await db.transact(chunk.map(m => db.tx.userMovies[m.id].delete()));
+        await transactWithRetry(chunk.map(m => db.tx.userMovies[m.id].delete()));
         done += chunk.length;
         setImportProgress({ done, total: Math.max(total, 1) });
+        await new Promise(r => setTimeout(r, CHUNK_PAUSE_MS));
       }
       setStep('files');
     } catch (e: unknown) {
@@ -324,7 +329,7 @@ export default function ImportScreen() {
           setUnmatchedShows(result.unmatched);
           if (!tracking) {
             setError(
-              'No tracking-prod-records-v2.csv found. Episode checkmarks will use episode counts only, not your last watched S/E.'
+              'No tracking-prod-records-v2.csv found. Shows will import without per-episode check-ins.'
             );
           }
         } else {
@@ -414,6 +419,7 @@ export default function ImportScreen() {
       tmdbId: number;
       startSeason: number;
       entityId: string;
+      trackFrom: TrackFrom | null;
     };
     const toClassify: ToClassify[] = [];
 
@@ -431,13 +437,24 @@ export default function ImportScreen() {
           (done, total) => setImportProgress({ done, total })
         );
 
+        const keysByTvTime = new Map<number, string[]>();
+        for (const ep of expandedEpisodes) {
+          const list = keysByTvTime.get(ep.tvTimeSeriesId) ?? [];
+          list.push(`${ep.seasonNumber}x${ep.episodeNumber}`);
+          keysByTvTime.set(ep.tvTimeSeriesId, list);
+        }
+
         setStep('importing');
         setImportProgress({ done: 0, total: toImportShows.length });
         let doneShows = 0;
         const seenTmdb = new Set<number>();
 
         for (const m of toImportShows) {
-          const startSeason = Math.max(1, m.seriesRecord.lastSeasonNum ?? 1);
+          const trackFrom = deriveTrackFrom(
+            keysByTvTime.get(m.seriesRecord.tvTimeSeriesId) ?? [],
+            m.seriesRecord.lastSeasonNum
+          );
+          const startSeason = Math.max(1, trackFrom?.season ?? m.seriesRecord.lastSeasonNum ?? 1);
           const tmdbId = m.tmdbShow.id;
           if (seenTmdb.has(tmdbId)) {
             doneShows++;
@@ -449,7 +466,7 @@ export default function ImportScreen() {
           const existingId = existingByTmdb.get(tmdbId);
           if (existingId) {
             if (m.status === 'watching') {
-              toClassify.push({ entityId: existingId, tmdbId, startSeason });
+              toClassify.push({ entityId: existingId, tmdbId, startSeason, trackFrom });
             }
             doneShows++;
             setImportProgress({ done: doneShows, total: toImportShows.length });
@@ -467,10 +484,13 @@ export default function ImportScreen() {
             nextSeasonNum: startSeason,
             nextEpisodeNum: m.seriesRecord.lastEpNum ?? 1,
             nextEpisodeName: '',
+            ...(trackFrom
+              ? { trackFromSeason: trackFrom.season, trackFromEpisode: trackFrom.episode }
+              : {}),
           });
-          await db.transact([tx]);
+          await transactWithRetry([tx]);
           if (m.status === 'watching') {
-            toClassify.push({ entityId, tmdbId, startSeason });
+            toClassify.push({ entityId, tmdbId, startSeason, trackFrom });
           }
           doneShows++;
           setImportProgress({ done: doneShows, total: toImportShows.length });
@@ -481,9 +501,18 @@ export default function ImportScreen() {
           toImportShows.map(m => [m.seriesRecord.tvTimeSeriesId, m.tmdbShow.id])
         );
 
+        const alreadyEp = new Set(
+          (dbData?.watchedEpisodes ?? []).map(
+            e => `${e.tmdbShowId}-${e.seasonNumber}-${e.episodeNumber}`
+          )
+        );
         validEpisodes = expandedEpisodes.filter(ep => {
           const tmdbId = tvTimeTmdbMap.get(ep.tvTimeSeriesId);
-          return tmdbId != null && importedTmdbIds.has(tmdbId);
+          if (tmdbId == null || !importedTmdbIds.has(tmdbId)) return false;
+          const key = `${tmdbId}-${ep.seasonNumber}-${ep.episodeNumber}`;
+          if (alreadyEp.has(key)) return false;
+          alreadyEp.add(key);
+          return true;
         });
 
         const epChunks = chunkArray(validEpisodes, CHUNK_SIZE);
@@ -491,7 +520,7 @@ export default function ImportScreen() {
         let doneEpChunks = 0;
 
         for (const chunk of epChunks) {
-          await db.transact(
+          await transactWithRetry(
             chunk.map(ep => {
               const tmdbId = tvTimeTmdbMap.get(ep.tvTimeSeriesId)!;
               return db.tx.watchedEpisodes[instantId()]
@@ -509,7 +538,7 @@ export default function ImportScreen() {
             done: toImportShows.length + doneEpChunks,
             total: toImportShows.length + totalEpChunks,
           });
-          await new Promise(r => setTimeout(r, 100));
+          await new Promise(r => setTimeout(r, CHUNK_PAUSE_MS));
         }
       }
 
@@ -540,7 +569,7 @@ export default function ImportScreen() {
             tmdbReleaseDate: m.tmdbMovie.release_date || m.record.releaseDate || '',
             runtime: m.record.runtimeMinutes ?? undefined,
           });
-          await db.transact([tx]);
+          await transactWithRetry([tx]);
           doneMovies++;
           setImportProgress({ done: doneMovies, total: toImportMovies.length });
         }
@@ -579,10 +608,20 @@ export default function ImportScreen() {
             const progress = await findProgressFromTmdb(
               item.tmdbId,
               watched,
-              item.startSeason
+              item.startSeason,
+              0,
+              item.trackFrom
             );
-            await db.transact([
-              db.tx.userShows[item.entityId].update(progressUpdates(progress)),
+            await transactWithRetry([
+              db.tx.userShows[item.entityId].update({
+                ...progressUpdates(progress),
+                ...(item.trackFrom
+                  ? {
+                      trackFromSeason: item.trackFrom.season,
+                      trackFromEpisode: item.trackFrom.episode,
+                    }
+                  : {}),
+              }),
             ]);
           } catch (e) {
             console.warn('Failed to classify show', item.tmdbId, e);

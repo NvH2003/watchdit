@@ -15,7 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { id as instantId } from '@instantdb/react-native';
 import { tmdb, posterUrl, stillUrl, formatEuropeanDate, formatRuntime, TmdbShow, TmdbSeasonSummary, TmdbEpisode, TmdbWatchProvider, providerLogoUrl } from '@/lib/tmdb';
 import db from '@/lib/db';
-import { progressUpdates, hasAired, isFutureAirDate, findProgressFromTmdb, clampEarlyAccessDays } from '@/lib/progress';
+import { progressUpdates, hasAired, isFutureAirDate, findProgressFromTmdb, clampEarlyAccessDays, trackFromOf, deriveTrackFrom, TrackFrom } from '@/lib/progress';
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from '@/lib/stats';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
@@ -347,12 +347,16 @@ export default function ShowDetailScreen() {
     for (const item of patch?.add ?? []) watched.add(`${item.season}x${item.ep}`);
     for (const item of patch?.remove ?? []) watched.delete(`${item.season}x${item.ep}`);
 
+    const stored = trackFromOf(userShow);
     const startSeason = Math.max(
       1,
-      patch?.startSeason ?? (userShow?.nextSeasonNum as number | undefined) ?? 1
+      stored?.season ??
+        patch?.startSeason ??
+        (userShow?.nextSeasonNum as number | undefined) ??
+        1
     );
 
-    findProgressFromTmdb(showId, watched, startSeason, daysEarly)
+    findProgressFromTmdb(showId, watched, startSeason, daysEarly, stored)
       .then(progress => {
         if (!patch && userShow?.status === 'watchLater') return;
         const updates: Record<string, unknown> = progressUpdates(progress);
@@ -534,9 +538,17 @@ export default function ShowDetailScreen() {
   async function applyProgress(
     userShowId: string,
     watchedKeys: Set<string>,
-    extra?: Record<string, unknown>
+    extra?: Record<string, unknown>,
+    trackFrom?: TrackFrom | null
   ) {
-    const progress = await findProgressFromTmdb(showId, watchedKeys, 1, daysEarly);
+    const floor = trackFrom === undefined ? trackFromOf(userShow) : trackFrom;
+    const progress = await findProgressFromTmdb(
+      showId,
+      watchedKeys,
+      floor?.season ?? 1,
+      daysEarly,
+      floor
+    );
     const updates: Record<string, unknown> = {
       ...progressUpdates(progress),
       lastTouchedAt: new Date().toISOString(),
@@ -545,28 +557,68 @@ export default function ShowDetailScreen() {
     await db.transact([db.tx.userShows[userShowId].update(updates)]);
   }
 
-  async function markShowUpToDate() {
-    if (!user) return;
-    const toAdd = await collectAllAiredUnwatched();
-    await writeWatched(toAdd);
+  function extraShowMeta(): Record<string, unknown> {
+    const extra: Record<string, unknown> = {};
+    if (show?.original_language) extra.tmdbOriginalLanguage = show.original_language;
+    const episodeRuntime = show ? averageEpisodeRuntime(show.episode_run_time) : null;
+    if (episodeRuntime != null) extra.episodeRuntime = episodeRuntime;
+    return extra;
+  }
 
+  async function markShowUpToDate(markOlder: boolean) {
+    if (!user) return;
     const watched = new Set(
       watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
     );
-    for (const item of toAdd) watched.add(`${item.season}x${item.ep}`);
+    const extra = extraShowMeta();
 
-    const episodeRuntime = show
-      ? averageEpisodeRuntime(show.episode_run_time)
-      : null;
-    const extra: Record<string, unknown> = {};
-    if (show?.original_language) {
-      extra.tmdbOriginalLanguage = show.original_language;
+    if (markOlder) {
+      const toAdd = await collectAllAiredUnwatched();
+      await writeWatched(toAdd);
+      for (const item of toAdd) watched.add(`${item.season}x${item.ep}`);
+      extra.trackFromSeason = null;
+      extra.trackFromEpisode = null;
+      const userShowId = userShow?.id ?? (await createShowOnList('upToDate'));
+      if (!userShowId) return;
+      await applyProgress(userShowId, watched, extra, null);
+      return;
     }
-    if (episodeRuntime != null) extra.episodeRuntime = episodeRuntime;
 
+    let floor = deriveTrackFrom(watched, userShow?.nextSeasonNum as number | undefined);
+    if (!floor) {
+      const aired = await collectAllAiredUnwatched();
+      const last = aired[aired.length - 1];
+      if (last) floor = { season: last.season, episode: last.ep + 1 };
+    }
+    if (floor) {
+      extra.trackFromSeason = floor.season;
+      extra.trackFromEpisode = floor.episode;
+    }
     const userShowId = userShow?.id ?? (await createShowOnList('upToDate'));
     if (!userShowId) return;
-    await applyProgress(userShowId, watched, extra);
+    await applyProgress(userShowId, watched, extra, floor);
+  }
+
+  async function olderSeasonsHaveUnwatched(): Promise<boolean> {
+    const run =
+      trackFromOf(userShow) ??
+      deriveTrackFrom(watchedSet, userShow?.nextSeasonNum as number | undefined);
+    if (!run) {
+      const aired = await collectAllAiredUnwatched();
+      return aired.length > 0;
+    }
+    for (const s of seasonMeta) {
+      if (s.season_number <= 0 || s.season_number > run.season) continue;
+      const eps = await ensureSeason(s.season_number);
+      const gap = eps.some(
+        ep =>
+          hasAired(ep.air_date, daysEarly) &&
+          !watchedSet.has(`${s.season_number}x${ep.episode_number}`) &&
+          (s.season_number < run.season || ep.episode_number < run.episode)
+      );
+      if (gap) return true;
+    }
+    return false;
   }
 
   async function setEarlyAccessDays(next: number) {
@@ -579,7 +631,13 @@ export default function ShowDetailScreen() {
       watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
     );
     try {
-      const progress = await findProgressFromTmdb(showId, watched, 1, days);
+      const progress = await findProgressFromTmdb(
+        showId,
+        watched,
+        1,
+        days,
+        trackFromOf(userShow)
+      );
       await db.transact([
         db.tx.userShows[userShowId].update({
           ...progressUpdates(progress),
@@ -597,7 +655,19 @@ export default function ShowDetailScreen() {
     if (status === 'upToDate') {
       setStatusBusy(true);
       try {
-        await markShowUpToDate();
+        const ask = await olderSeasonsHaveUnwatched();
+        let markOlder = true;
+        if (ask) {
+          const markEarlier = await askConfirm(
+            'Mark older seasons as watched?',
+            'You are caught up, but earlier seasons are not fully checked. Mark those as watched too? Choose No to leave them open and keep this show off Continue watching until a new episode airs.',
+            'Yes',
+            'No'
+          );
+          if (markEarlier === 'cancel') return;
+          markOlder = markEarlier === true;
+        }
+        await markShowUpToDate(markOlder);
       } catch (e) {
         console.warn('Failed to mark show up to date', e);
       } finally {
@@ -620,6 +690,7 @@ export default function ShowDetailScreen() {
             startSeason: 1,
             originalLanguage: show?.original_language ?? undefined,
             daysEarly,
+            clearTrackFrom: true,
           });
         } catch (e) {
           console.warn('Failed to activate watching', e);

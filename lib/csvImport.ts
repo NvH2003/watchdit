@@ -299,8 +299,8 @@ export async function matchShowsByTvdb(
 }
 
 /**
- * TV Time's CSV mostly stores the last watched episode per show, not every check-in.
- * Fill in every earlier TMDB episode so the library matches "watched up to SxEy".
+ * Keep real TV Time check-ins. Only fill the last watched season when a show
+ * has a last-S/E pointer and no per-episode rows (never S1 → last).
  */
 export async function expandWatchedEpisodes(
   matched: MatchedShow[],
@@ -310,6 +310,11 @@ export async function expandWatchedEpisodes(
   const tvTimeToTmdb = new Map(
     matched.map(m => [m.seriesRecord.tvTimeSeriesId, m.tmdbShow.id])
   );
+
+  const extraCount = new Map<number, number>();
+  for (const ep of extraEpisodes) {
+    extraCount.set(ep.tvTimeSeriesId, (extraCount.get(ep.tvTimeSeriesId) ?? 0) + 1);
+  }
 
   const seen = new Set<string>();
   const result: EpisodeRecord[] = [];
@@ -328,49 +333,24 @@ export async function expandWatchedEpisodes(
   for (let i = 0; i < matched.length; i++) {
     onProgress?.(i, matched.length);
     const m = matched[i];
+    if ((extraCount.get(m.seriesRecord.tvTimeSeriesId) ?? 0) > 0) continue;
+
     const lastS = m.seriesRecord.lastSeasonNum;
     const lastE = m.seriesRecord.lastEpNum;
-    const count = m.seriesRecord.epWatchCount;
+    if (!lastS || !lastE) continue;
 
     try {
       if (i > 0 && i % 5 === 0) await sleep(400);
-
-      if (lastS && lastE) {
-        for (let s = 1; s <= lastS; s++) {
-          const season = await tmdb.getSeason(m.tmdbShow.id, s);
-          for (const e of season.episodes ?? []) {
-            if (e.season_number <= 0) continue;
-            const beforeLastSeason = s < lastS;
-            const inLastSeason = s === lastS && e.episode_number <= lastE;
-            if (!beforeLastSeason && !inLastSeason) continue;
-            add({
-              tvTimeSeriesId: m.seriesRecord.tvTimeSeriesId,
-              seriesName: m.seriesRecord.seriesName,
-              seasonNumber: e.season_number,
-              episodeNumber: e.episode_number,
-              watchedAt: new Date().toISOString(),
-            });
-          }
-        }
-      } else if (count > 0) {
-        const details = await tmdb.getShow(m.tmdbShow.id);
-        const totalSeasons = details.number_of_seasons ?? 0;
-        let remaining = count;
-        for (let s = 1; s <= totalSeasons && remaining > 0; s++) {
-          const season = await tmdb.getSeason(m.tmdbShow.id, s);
-          const eps = (season.episodes ?? []).filter(e => e.season_number > 0);
-          for (const e of eps) {
-            if (remaining <= 0) break;
-            add({
-              tvTimeSeriesId: m.seriesRecord.tvTimeSeriesId,
-              seriesName: m.seriesRecord.seriesName,
-              seasonNumber: e.season_number,
-              episodeNumber: e.episode_number,
-              watchedAt: new Date().toISOString(),
-            });
-            remaining--;
-          }
-        }
+      const season = await tmdb.getSeason(m.tmdbShow.id, lastS);
+      for (const e of season.episodes ?? []) {
+        if (e.season_number <= 0 || e.episode_number > lastE) continue;
+        add({
+          tvTimeSeriesId: m.seriesRecord.tvTimeSeriesId,
+          seriesName: m.seriesRecord.seriesName,
+          seasonNumber: e.season_number,
+          episodeNumber: e.episode_number,
+          watchedAt: new Date().toISOString(),
+        });
       }
     } catch (e) {
       console.warn('Failed to expand watched episodes for', m.tmdbShow.name, e);

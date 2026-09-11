@@ -29,6 +29,9 @@ const _schema = i.schema({
       episodeRuntime: i.number().optional(),
       /** Days before TMDB air date the next episode counts as available. */
       earlyAccessDays: i.number().optional(),
+      /** Ignore unwatched episodes before this S/E for status and Continue watching. */
+      trackFromSeason: i.number().optional(),
+      trackFromEpisode: i.number().optional(),
       ownerShowKey: i.string().unique().indexed().optional(),
     }),
     watchedEpisodes: i.entity({

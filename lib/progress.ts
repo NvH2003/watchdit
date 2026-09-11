@@ -143,6 +143,68 @@ export type ProgressEpisode = {
 
 export type WatchStatus = 'watching' | 'upToDate' | 'finished';
 
+export type TrackFrom = {
+  season: number;
+  episode: number;
+};
+
+export function trackFromOf(show: {
+  trackFromSeason?: unknown;
+  trackFromEpisode?: unknown;
+} | null | undefined): TrackFrom | null {
+  if (!show) return null;
+  const season = Number(show.trackFromSeason);
+  if (!Number.isFinite(season) || season < 1) return null;
+  const episode = Number(show.trackFromEpisode);
+  return {
+    season,
+    episode: Number.isFinite(episode) && episode >= 1 ? episode : 1,
+  };
+}
+
+export function isBeforeTrackFrom(
+  season: number,
+  ep: number,
+  trackFrom?: TrackFrom | null
+): boolean {
+  if (!trackFrom) return false;
+  return (
+    season < trackFrom.season ||
+    (season === trackFrom.season && ep < trackFrom.episode)
+  );
+}
+
+/** Contiguous watched-season run ending at the latest check (or lastSeasonHint). */
+export function deriveTrackFrom(
+  watchedKeys: Iterable<string>,
+  lastSeasonHint?: number | null
+): TrackFrom | null {
+  const items: { season: number; ep: number }[] = [];
+  for (const key of watchedKeys) {
+    const match = /^(\d+)x(\d+)$/.exec(String(key));
+    if (!match) continue;
+    const season = Number(match[1]);
+    const ep = Number(match[2]);
+    if (season < 1 || ep < 1) continue;
+    items.push({ season, ep });
+  }
+  if (items.length === 0) {
+    const hint = Number(lastSeasonHint);
+    if (Number.isFinite(hint) && hint >= 1) return { season: hint, episode: 1 };
+    return null;
+  }
+  const seasons = new Set(items.map(i => i.season));
+  const hint = Number(lastSeasonHint);
+  let lastSeason =
+    Number.isFinite(hint) && hint >= 1 && seasons.has(hint)
+      ? hint
+      : Math.max(...items.map(i => i.season));
+  let start = lastSeason;
+  while (seasons.has(start - 1)) start -= 1;
+  const eps = items.filter(i => i.season === start).map(i => i.ep);
+  return { season: start, episode: Math.min(...eps) };
+}
+
 export type ProgressResult = {
   status: WatchStatus;
   nextSeasonNum?: number;
@@ -166,10 +228,14 @@ export function computeProgress(
   episodes: ProgressEpisode[],
   watched: Set<string>,
   tmdbStatus?: string | null,
-  daysEarly = 0
+  daysEarly = 0,
+  trackFrom?: TrackFrom | null
 ): ProgressResult {
   const unwatched = episodes.filter(
-    e => e.season > 0 && !watched.has(`${e.season}x${e.ep}`)
+    e =>
+      e.season > 0 &&
+      !watched.has(`${e.season}x${e.ep}`) &&
+      !isBeforeTrackFrom(e.season, e.ep, trackFrom)
   );
   const unwatchedAired = unwatched.filter(e => hasAired(e.airDate, daysEarly));
   const nextAired = unwatchedAired[0];
@@ -248,12 +314,13 @@ export async function findProgressFromTmdb(
   tmdbShowId: number,
   watched: Set<string>,
   startSeason = 1,
-  daysEarly = 0
+  daysEarly = 0,
+  trackFrom?: TrackFrom | null
 ): Promise<ProgressResult> {
   const details = await tmdb.getShow(tmdbShowId);
   const lang = details.original_language || undefined;
   const totalSeasons = details.number_of_seasons ?? 0;
-  const from = Math.max(1, startSeason);
+  const from = Math.max(1, trackFrom?.season ?? startSeason);
   const totalEpisodes = details.number_of_episodes;
   const seasonMeta = details.seasons ?? [];
 
@@ -278,6 +345,7 @@ export async function findProgressFromTmdb(
     const eps = (season.episodes ?? []).filter(e => e.season_number > 0);
 
     for (const e of eps) {
+      if (isBeforeTrackFrom(e.season_number, e.episode_number, trackFrom)) continue;
       if (watched.has(`${e.season_number}x${e.episode_number}`)) continue;
 
       const airDate = e.air_date ?? '';

@@ -8,6 +8,7 @@ import {
   msUntilNextLocalMidnight,
   progressUpdates,
   clampEarlyAccessDays,
+  TrackFrom,
 } from './progress';
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
@@ -30,16 +31,24 @@ export async function activateShowWatching(opts: {
   startSeason?: number;
   originalLanguage?: string;
   daysEarly?: number;
+  trackFrom?: TrackFrom | null;
+  /** Clear a catch-up floor so backlog can appear on Continue watching. */
+  clearTrackFrom?: boolean;
 }): Promise<void> {
   const progress = await findProgressFromTmdb(
     opts.tmdbShowId,
     opts.watchedKeys,
     opts.startSeason ?? 1,
-    clampEarlyAccessDays(opts.daysEarly)
+    clampEarlyAccessDays(opts.daysEarly),
+    opts.clearTrackFrom ? null : opts.trackFrom
   );
   const updates: Record<string, unknown> = {
     ...progressUpdates(progress),
   };
+  if (opts.clearTrackFrom) {
+    updates.trackFromSeason = null;
+    updates.trackFromEpisode = null;
+  }
   // Keep the user's Watching choice if TMDB would mark the show finished.
   if (updates.status === 'finished') {
     updates.status = 'watching';
@@ -76,6 +85,8 @@ export function createUserShowTx(
     nextEpisodeStillPath?: string;
     tvTimeSeriesId?: number;
     earlyAccessDays?: number;
+    trackFromSeason?: number;
+    trackFromEpisode?: number;
   }
 ) {
   const entityId = instantId();

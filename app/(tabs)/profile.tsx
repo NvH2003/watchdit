@@ -280,6 +280,7 @@ export default function ProfileScreen() {
           fromWatchLater: true,
           originalLanguage: show.tmdbOriginalLanguage as string | undefined,
           daysEarly: clampEarlyAccessDays(show.earlyAccessDays),
+          clearTrackFrom: true,
         });
       }
     } catch (e) {

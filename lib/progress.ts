@@ -154,7 +154,7 @@ function hasNextPointer(
   );
 }
 
-/** Show belongs on Coming up while the next unwatched episode is scheduled or TBA. */
+/** Show belongs on Coming up when the next unwatched episode has a future air date. */
 export function readyForUpcoming(
   status?: string | null,
   nextEpisodeAirDate?: string | null,
@@ -175,12 +175,7 @@ export function readyForUpcoming(
   ) {
     return false;
   }
-  if (isFutureAirDate(nextEpisodeAirDate, opts?.daysEarly)) return true;
-  return (
-    status === 'upToDate' &&
-    hasNextPointer(season, ep) &&
-    !hasAired(nextEpisodeAirDate, opts?.daysEarly)
-  );
+  return isFutureAirDate(nextEpisodeAirDate, opts?.daysEarly);
 }
 
 /** TMDB TV status: Ended / Canceled vs still running. */

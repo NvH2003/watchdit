@@ -208,22 +208,32 @@ export function classifyUpcomingDrop(opts: {
   return 'episode';
 }
 
-export function upcomingDropLabel(
+export function upcomingDropWord(
   kind?: string | null,
-  seasonNum?: number | null,
   episodeNum?: number | null
-): string {
+): 'Season' | 'Episode' {
   const inferred: UpcomingDropKind =
     kind === 'season' || kind === 'episode'
       ? kind
       : Number(episodeNum) <= 1
         ? 'season'
         : 'episode';
-  if (inferred === 'season') {
-    const n = Number(seasonNum);
-    return Number.isFinite(n) && n >= 1 ? `Season ${n}` : 'New season';
+  return inferred === 'season' ? 'Season' : 'Episode';
+}
+
+/** e.g. "Season airs 15 Sep" / "Episode airs 15 Sep". */
+export function upcomingAirsCaption(
+  kind?: string | null,
+  episodeNum?: number | null,
+  airsLabel?: string | null
+): string | null {
+  if (!airsLabel) return null;
+  const word = upcomingDropWord(kind, episodeNum);
+  if (airsLabel === 'TBA') return `${word} TBA`;
+  if (/^airs /i.test(airsLabel)) {
+    return `${word} ${airsLabel.replace(/^Airs /i, 'airs ')}`;
   }
-  return '1 episode';
+  return `${word} · ${airsLabel}`;
 }
 
 export type TrackFrom = {

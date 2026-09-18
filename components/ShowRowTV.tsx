@@ -17,7 +17,7 @@ import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
 import EpisodeDetailModal from '@/components/EpisodeDetailModal';
 import { fetchLongerEpisodeOverview } from '@/lib/episodeOverview';
-import { hasAired, isFutureAirDate, upcomingDropLabel } from '@/lib/progress';
+import { hasAired, isFutureAirDate, upcomingAirsCaption } from '@/lib/progress';
 
 export type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
 
@@ -151,9 +151,11 @@ export default function ShowRowTV({
     : status === 'upToDate' && !hasAired(nextEpisodeAirDate, daysEarly)
       ? 'TBA'
       : null;
-  const dropLabel = airsLabel
-    ? upcomingDropLabel(upcomingDropKind, nextSeasonNum, nextEpisodeNum)
-    : null;
+  const dropAirsLabel = upcomingAirsCaption(
+    upcomingDropKind,
+    nextEpisodeNum,
+    airsLabel
+  );
   const runtimeLabel = formatRuntime(nextEpisodeRuntime) ?? formatRuntime(episodeRuntime);
 
   useEffect(() => {
@@ -244,10 +246,8 @@ export default function ShowRowTV({
               {runtimeLabel ? ` · ${runtimeLabel}` : ''}
             </Text>
           ) : null}
-          {airsLabel ? (
-            <Text style={styles.airsLabel}>
-              {dropLabel ? `${dropLabel} · ${airsLabel}` : airsLabel}
-            </Text>
+          {dropAirsLabel ? (
+            <Text style={styles.airsLabel}>{dropAirsLabel}</Text>
           ) : null}
         </TouchableOpacity>
       </View>

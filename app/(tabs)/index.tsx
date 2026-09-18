@@ -24,11 +24,11 @@ import {
   clampEarlyAccessDays,
   shiftAirDate,
   trackFromOf,
-  upcomingDropLabel,
+  upcomingAirsCaption,
 } from '@/lib/progress';
 import { episodeRuntimeMinutes } from '@/lib/stats';
 import { episodeTitleKey, episodeOverviewKey, watchedHintsFromRows, watchedTitleFields } from '@/lib/catalog';
-import { tmdb } from '@/lib/tmdb';
+import { tmdb, formatAirsLabel } from '@/lib/tmdb';
 import { theme } from '@/constants/theme';
 import { uniqueByTmdbShowId, activateShowWatching } from '@/lib/userShows';
 import {
@@ -508,11 +508,16 @@ export default function EpisodesScreen() {
           totalEpisodes={item.totalEpisodes as number | undefined}
           caption={
             activeTab === 'upcoming'
-              ? upcomingDropLabel(
+              ? upcomingAirsCaption(
                   item.upcomingDropKind as string | undefined,
-                  item.nextSeasonNum as number | undefined,
-                  item.nextEpisodeNum as number | undefined
-                )
+                  item.nextEpisodeNum as number | undefined,
+                  formatAirsLabel(
+                    shiftAirDate(
+                      item.nextEpisodeAirDate as string | undefined,
+                      clampEarlyAccessDays(item.earlyAccessDays)
+                    )
+                  )
+                ) ?? undefined
               : undefined
           }
           onPress={() => router.push(`/show/${item.tmdbShowId}`)}

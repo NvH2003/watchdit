@@ -5,6 +5,7 @@ export const IMG_BASE = 'https://image.tmdb.org/t/p';
 async function get<T>(path: string, params: Record<string, string> = {}): Promise<T> {
   const url = new URL(`${BASE_URL}${path}`);
   url.searchParams.set('api_key', API_KEY);
+  if (!('language' in params)) url.searchParams.set('language', 'en-US');
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   const res = await fetch(url.toString());
   if (!res.ok) throw new Error(`TMDB ${res.status}: ${path}`);
@@ -17,6 +18,19 @@ export interface TmdbSeasonSummary {
   episode_count: number;
   name: string;
   air_date?: string | null;
+}
+
+export interface TmdbEpisode {
+  id: number;
+  episode_number: number;
+  season_number: number;
+  name: string;
+  overview: string;
+  air_date: string;
+  still_path: string | null;
+  /** Episode length in minutes when TMDB has it. */
+  runtime?: number | null;
+  vote_average?: number | null;
 }
 
 export interface TmdbShow {
@@ -34,19 +48,8 @@ export interface TmdbShow {
   /** Typical episode lengths in minutes. */
   episode_run_time?: number[];
   seasons?: TmdbSeasonSummary[];
-}
-
-export interface TmdbEpisode {
-  id: number;
-  episode_number: number;
-  season_number: number;
-  name: string;
-  overview: string;
-  air_date: string;
-  still_path: string | null;
-  /** Episode length in minutes when TMDB has it. */
-  runtime?: number | null;
-  vote_average?: number | null;
+  next_episode_to_air?: TmdbEpisode | null;
+  last_episode_to_air?: TmdbEpisode | null;
 }
 
 export interface TmdbSeason {
@@ -139,22 +142,11 @@ export const tmdb = {
   getPopular: () =>
     get<{ results: TmdbShow[] }>('/tv/popular'),
 
-  getSeason: (showId: number, seasonNumber: number, language?: string | null) =>
-    get<TmdbSeason>(
-      `/tv/${showId}/season/${seasonNumber}`,
-      language ? { language } : {}
-    ),
+  getSeason: (showId: number, seasonNumber: number) =>
+    get<TmdbSeason>(`/tv/${showId}/season/${seasonNumber}`),
 
-  getEpisode: (
-    showId: number,
-    seasonNumber: number,
-    episodeNumber: number,
-    language?: string | null
-  ) =>
-    get<TmdbEpisode>(
-      `/tv/${showId}/season/${seasonNumber}/episode/${episodeNumber}`,
-      language ? { language } : {}
-    ),
+  getEpisode: (showId: number, seasonNumber: number, episodeNumber: number) =>
+    get<TmdbEpisode>(`/tv/${showId}/season/${seasonNumber}/episode/${episodeNumber}`),
 
   getEpisodeTranslations: (showId: number, seasonNumber: number, episodeNumber: number) =>
     get<{
@@ -164,14 +156,10 @@ export const tmdb = {
       }[];
     }>(`/tv/${showId}/season/${seasonNumber}/episode/${episodeNumber}/translations`),
 
-  getSeasons: async (
-    showId: number,
-    totalSeasons: number,
-    language?: string | null
-  ): Promise<TmdbSeason[]> => {
+  getSeasons: async (showId: number, totalSeasons: number): Promise<TmdbSeason[]> => {
     const seasons: TmdbSeason[] = [];
     for (let n = 1; n <= totalSeasons; n++) {
-      seasons.push(await tmdb.getSeason(showId, n, language));
+      seasons.push(await tmdb.getSeason(showId, n));
     }
     return seasons;
   },

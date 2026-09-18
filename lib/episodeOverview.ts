@@ -9,6 +9,18 @@ export type EpisodeOverviewExtras = {
   voteAverage?: number | null;
 };
 
+function firstOverview(
+  translations: { iso_639_1: string; data?: { overview?: string } }[] | undefined,
+  lang: string
+): string {
+  for (const t of translations ?? []) {
+    if (t.iso_639_1 !== lang) continue;
+    const text = t.data?.overview?.trim() ?? '';
+    if (text) return text;
+  }
+  return '';
+}
+
 export async function fetchLongerEpisodeOverview(opts: {
   showId: number;
   season: number;
@@ -22,26 +34,22 @@ export async function fetchLongerEpisodeOverview(opts: {
     tmdb.getEpisodeTranslations(opts.showId, opts.season, opts.episode).catch(() => null),
   ]);
 
-  const preferred = new Set(
-    ['en', 'nl', opts.originalLanguage].filter((code): code is string => !!code)
-  );
-  let best = current;
-  const prefer = (text?: string | null) => {
-    const next = text?.trim() ?? '';
-    if (next.length > best.length) best = next;
-  };
-  prefer(detail?.overview);
-  for (const t of translations?.translations ?? []) {
-    if (preferred.has(t.iso_639_1)) prefer(t.data?.overview);
-  }
-  if (best.length <= current.length) {
+  const english = firstOverview(translations?.translations, 'en');
+  const fromDetail = detail?.overview?.trim() ?? '';
+  let overview = english || fromDetail;
+  if (!overview) {
     for (const t of translations?.translations ?? []) {
-      prefer(t.data?.overview);
+      const text = t.data?.overview?.trim() ?? '';
+      if (text) {
+        overview = text;
+        break;
+      }
     }
   }
+  if (!overview) overview = current;
 
   return {
-    overview: best,
+    overview,
     stillPath: detail?.still_path ?? undefined,
     name: detail?.name,
     runtime: detail?.runtime,

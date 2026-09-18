@@ -206,7 +206,7 @@ export default function ShowDetailScreen() {
     if (episodesBySeason[seasonNum]) return episodesBySeason[seasonNum];
     setLoadingSeason(seasonNum);
     try {
-      const data = await tmdb.getSeason(showId, seasonNum, show?.original_language);
+      const data = await tmdb.getSeason(showId, seasonNum);
       const eps = (data.episodes ?? []).filter(e => e.season_number > 0);
       setEpisodesBySeason(prev => ({ ...prev, [seasonNum]: eps }));
       return eps;

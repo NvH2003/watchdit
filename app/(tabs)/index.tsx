@@ -386,8 +386,7 @@ export default function EpisodesScreen() {
     let episodeRuntime: number | null = null;
     if (episodeId) {
       try {
-        const lang = (show.tmdbOriginalLanguage as string | undefined) || undefined;
-        const season = await tmdb.getSeason(tmdbId, curSeason, lang);
+        const season = await tmdb.getSeason(tmdbId, curSeason);
         const ep = (season.episodes ?? []).find(e => e.episode_number === curEpisode);
         episodeRuntime = episodeRuntimeMinutes(ep?.runtime);
       } catch {

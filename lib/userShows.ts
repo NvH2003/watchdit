@@ -340,11 +340,10 @@ export function useBackfillEpisodeRuntimes() {
       if (!Number.isFinite(tmdbId) || !Number.isFinite(seasonNum) || !Number.isFinite(epNum)) {
         return;
       }
-      const lang = (show.tmdbOriginalLanguage as string | undefined) || undefined;
       let nextRuntime: number | null = null;
 
       try {
-        const season = await tmdb.getSeason(tmdbId, seasonNum, lang);
+        const season = await tmdb.getSeason(tmdbId, seasonNum);
         const ep = (season.episodes ?? []).find(e => e.episode_number === epNum);
         nextRuntime = episodeRuntimeMinutes(ep?.runtime);
       } catch {
@@ -353,7 +352,7 @@ export function useBackfillEpisodeRuntimes() {
 
       if (nextRuntime == null) {
         try {
-          const detail = await tmdb.getEpisode(tmdbId, seasonNum, epNum, lang);
+          const detail = await tmdb.getEpisode(tmdbId, seasonNum, epNum);
           nextRuntime = episodeRuntimeMinutes(detail.runtime);
         } catch {
           // Fall through.
@@ -478,9 +477,7 @@ export function useBackfillEpisodeRuntimes() {
           const seasonNum = Number(seasonRaw);
           const rows = bySeason.get(key) ?? [];
           try {
-            const show = shows.find(s => Number(s.tmdbShowId) === tmdbId);
-            const lang = (show?.tmdbOriginalLanguage as string | undefined) || undefined;
-            const season = await tmdb.getSeason(tmdbId, seasonNum, lang);
+            const season = await tmdb.getSeason(tmdbId, seasonNum);
             const runtimeByEp = new Map<number, number>();
             for (const ep of season.episodes ?? []) {
               const mins = episodeRuntimeMinutes(ep.runtime);
@@ -490,7 +487,7 @@ export function useBackfillEpisodeRuntimes() {
               const epNum = Number(row.episodeNumber);
               if (runtimeByEp.has(epNum)) continue;
               try {
-                const detail = await tmdb.getEpisode(tmdbId, seasonNum, epNum, lang);
+                const detail = await tmdb.getEpisode(tmdbId, seasonNum, epNum);
                 const mins = episodeRuntimeMinutes(detail.runtime);
                 if (mins != null) runtimeByEp.set(epNum, mins);
               } catch {

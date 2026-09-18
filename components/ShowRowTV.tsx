@@ -17,7 +17,7 @@ import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
 import EpisodeDetailModal from '@/components/EpisodeDetailModal';
 import { fetchLongerEpisodeOverview } from '@/lib/episodeOverview';
-import { isFutureAirDate } from '@/lib/progress';
+import { hasAired, isFutureAirDate } from '@/lib/progress';
 
 export type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
 
@@ -146,7 +146,9 @@ export default function ShowRowTV({
   const remaining = remainingCount ?? 0;
   const airsLabel = isFutureAirDate(nextEpisodeAirDate, daysEarly)
     ? formatAirsLabel(nextEpisodeAirDate)
-    : null;
+    : status === 'upToDate' && !hasAired(nextEpisodeAirDate, daysEarly)
+      ? 'TBA'
+      : null;
   const runtimeLabel = formatRuntime(nextEpisodeRuntime) ?? formatRuntime(episodeRuntime);
 
   useEffect(() => {

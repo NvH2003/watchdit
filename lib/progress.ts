@@ -8,6 +8,7 @@ import {
   expandWatchedKeys,
   WatchedHint,
   DedupeEpisode,
+  isUnpublishedPlaceholder,
 } from './catalog';
 
 export function parseAirDay(iso?: string | null): Date | null {
@@ -66,10 +67,20 @@ export type EpisodeAvailability = {
   stillPath?: string | null;
   runtime?: number | null;
   overview?: string | null;
+  name?: string | null;
 };
 
 /** TMDB listed the episode as published (still, runtime, or synopsis) even without an air date. */
 export function episodeLooksReleased(ep: EpisodeAvailability): boolean {
+  if (
+    isUnpublishedPlaceholder({
+      name: ep.name,
+      air_date: ep.airDate,
+      overview: ep.overview,
+    })
+  ) {
+    return false;
+  }
   if (ep.stillPath) return true;
   if (episodeRuntimeMinutes(ep.runtime) != null) return true;
   return (ep.overview?.trim().length ?? 0) >= 20;
@@ -286,7 +297,13 @@ export function computeProgress(
   );
   const unwatchedAired = unwatched.filter(e =>
     episodeIsAvailable(
-      { airDate: e.airDate, stillPath: e.stillPath, runtime: e.runtime, overview: e.overview },
+      {
+        airDate: e.airDate,
+        stillPath: e.stillPath,
+        runtime: e.runtime,
+        overview: e.overview,
+        name: e.name,
+      },
       daysEarly
     )
   );
@@ -295,7 +312,13 @@ export function computeProgress(
   const nextTba = unwatched.find(
     e =>
       !episodeIsAvailable(
-        { airDate: e.airDate, stillPath: e.stillPath, runtime: e.runtime, overview: e.overview },
+        {
+          airDate: e.airDate,
+          stillPath: e.stillPath,
+          runtime: e.runtime,
+          overview: e.overview,
+          name: e.name,
+        },
         daysEarly
       ) && !isFutureAirDate(e.airDate, daysEarly)
   );
@@ -460,7 +483,8 @@ export async function findProgressFromTmdb(
       continue;
     }
     const eps = (season.episodes ?? []).filter(e => e.season_number > 0);
-    for (const e of eps) {
+    const listed = eps.filter(e => !isUnpublishedPlaceholder(e));
+    for (const e of listed) {
       tmdbListed.push({
         season_number: e.season_number,
         episode_number: e.episode_number,
@@ -474,7 +498,7 @@ export async function findProgressFromTmdb(
       });
       ingest(toNext(e));
     }
-    if (eps.length === 0) {
+    if (listed.length === 0) {
       emptySeasonStubs.push({
         season: s,
         air:
@@ -494,6 +518,7 @@ export async function findProgressFromTmdb(
       if (maze.season < from) continue;
       if (tmdbAlreadyHasEpisode(tmdbListed, maze)) continue;
       const mapped = tvmazeToTmdbEpisode(maze);
+      if (isUnpublishedPlaceholder(mapped)) continue;
       catalog.push(mapped);
       ingest(toNext(mapped));
     }
@@ -529,12 +554,13 @@ export async function findProgressFromTmdb(
 
   for (const item of merged) {
     if (
-      episodeIsAvailable(
+        episodeIsAvailable(
         {
           airDate: item.air_date,
           stillPath: item.still_path,
           runtime: item.runtime,
           overview: item.overview,
+          name: item.name,
         },
         daysEarly
       )
@@ -562,6 +588,7 @@ export async function findProgressFromTmdb(
             stillPath: fallback.still_path,
             runtime: fallback.runtime,
             overview: fallback.overview,
+            name: fallback.name,
           },
           daysEarly
         )

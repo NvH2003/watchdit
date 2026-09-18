@@ -26,6 +26,33 @@ export function tvmazeToTmdbEpisode(ep: TvmazeEpisode): TmdbEpisode {
   };
 }
 
+/** TMDB/TVmaze default titles like "Episode 1" / "Aflevering 12" with no real name. */
+export function isGenericEpisodeTitle(name?: string | null): boolean {
+  const n = (name ?? '').trim();
+  if (!n) return true;
+  return /^(episode|aflevering|episodio|folge|capitulo|capítulo)\s*\d+$/i.test(n);
+}
+
+function hasListedAirDate(iso?: string | null): boolean {
+  const s = (iso ?? '').trim();
+  if (!s) return false;
+  return /^\d{4}-\d{2}-\d{2}/.test(s) || !Number.isNaN(Date.parse(s));
+}
+
+/**
+ * Announced-but-empty TMDB row: generic name, no air date, no synopsis.
+ * Still image and runtime are not enough — TMDB often copies the season poster.
+ */
+export function isUnpublishedPlaceholder(ep: {
+  name?: string | null;
+  air_date?: string | null;
+  overview?: string | null;
+}): boolean {
+  if (hasListedAirDate(ep.air_date)) return false;
+  if (!isGenericEpisodeTitle(ep.name)) return false;
+  return (ep.overview?.trim().length ?? 0) < 20;
+}
+
 export function normalizeEpisodeTitle(name?: string | null): string {
   return (name ?? '')
     .normalize('NFKD')
@@ -278,12 +305,14 @@ export function mergeTmdbEpisodes(
   const fromTmdb: TmdbEpisode[] = [];
   for (const ep of tmdbEps) {
     if (ep.season_number < 1 || ep.episode_number < 1) continue;
+    if (isUnpublishedPlaceholder(ep)) continue;
     byKey.set(`${ep.season_number}x${ep.episode_number}`, ep);
     fromTmdb.push(ep);
   }
   for (const maze of mazeEps) {
     if (tmdbAlreadyHasEpisode(fromTmdb, maze)) continue;
     const incoming = tvmazeToTmdbEpisode(maze);
+    if (isUnpublishedPlaceholder(incoming)) continue;
     const key = `${incoming.season_number}x${incoming.episode_number}`;
     if (byKey.has(key)) continue;
     byKey.set(key, incoming);

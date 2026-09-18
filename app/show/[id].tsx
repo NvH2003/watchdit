@@ -86,13 +86,16 @@ export default function ShowDetailScreen() {
     watchedHintsFromRows(watchedEps)
   );
 
-  function epAvailable(ep: Pick<TmdbEpisode, 'air_date' | 'still_path' | 'runtime' | 'overview'>) {
+  function epAvailable(
+    ep: Pick<TmdbEpisode, 'air_date' | 'still_path' | 'runtime' | 'overview' | 'name'>
+  ) {
     return episodeIsAvailable(
       {
         airDate: ep.air_date,
         stillPath: ep.still_path,
         runtime: ep.runtime,
         overview: ep.overview,
+        name: ep.name,
       },
       daysEarly
     );
@@ -1137,7 +1140,7 @@ export default function ShowDetailScreen() {
               const eps = rawEps
                 ? dedupeEpisodesByTitle(rawEps, watchedSet)
                 : undefined;
-              const total = eps?.length || season.episode_count || 0;
+              const total = eps != null ? eps.length : season.episode_count || 0;
               const uniqueWatched = new Set(
                 watchedEps
                   .filter(e => e.seasonNumber === season.season_number)

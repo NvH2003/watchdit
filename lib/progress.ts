@@ -1,6 +1,6 @@
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
-import { loadCatalogExtras, tvmazeToTmdbEpisode, tmdbAlreadyHasEpisode } from './catalog';
+import { loadCatalogExtras, tvmazeToTmdbEpisode, tmdbAlreadyHasEpisode, dedupeEpisodesByTitle } from './catalog';
 
 export function parseAirDay(iso?: string | null): Date | null {
   if (!iso) return null;
@@ -496,10 +496,13 @@ export async function findProgressFromTmdb(
     });
   }
 
-  const merged = [...byKey.values()].sort((a, b) =>
-    a.season_number !== b.season_number
-      ? a.season_number - b.season_number
-      : a.episode_number - b.episode_number
+  const merged = dedupeEpisodesByTitle(
+    [...byKey.values()].sort((a, b) =>
+      a.season_number !== b.season_number
+        ? a.season_number - b.season_number
+        : a.episode_number - b.episode_number
+    ),
+    watched
   );
 
   for (const item of merged) {

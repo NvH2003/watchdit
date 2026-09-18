@@ -27,7 +27,87 @@ export function tvmazeToTmdbEpisode(ep: TvmazeEpisode): TmdbEpisode {
 }
 
 export function normalizeEpisodeTitle(name?: string | null): string {
-  return (name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return (name ?? '')
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/['’`´]/g, '')
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+export function normalizeOverview(text?: string | null): string {
+  return stripHtml(text)
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/['’`´]/g, '')
+    .replace(/[^a-z0-9]+/g, '');
+}
+
+export function overviewsMatch(a?: string | null, b?: string | null): boolean {
+  const na = normalizeOverview(a);
+  const nb = normalizeOverview(b);
+  if (!na && !nb) return true;
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  return na.includes(nb) || nb.includes(na);
+}
+
+export type DedupeEpisode = {
+  season_number: number;
+  episode_number: number;
+  name?: string | null;
+  overview?: string | null;
+  id?: number;
+};
+
+function isMazeId(id?: number): boolean {
+  return id != null && id >= MAZE_ID_OFFSET;
+}
+
+function preferDuplicate<T extends DedupeEpisode>(
+  a: T,
+  b: T,
+  watchedKeys?: Set<string>
+): T {
+  const aKey = `${a.season_number}x${a.episode_number}`;
+  const bKey = `${b.season_number}x${b.episode_number}`;
+  const aWatched = Boolean(watchedKeys?.has(aKey));
+  const bWatched = Boolean(watchedKeys?.has(bKey));
+  if (aWatched && !bWatched) return a;
+  if (bWatched && !aWatched) return b;
+  if (!isMazeId(a.id) && isMazeId(b.id)) return a;
+  if (!isMazeId(b.id) && isMazeId(a.id)) return b;
+  return a.episode_number <= b.episode_number ? a : b;
+}
+
+/** Collapse same-season rows that share a title and synopsis (TMDB + TVmaze dupes). */
+export function dedupeEpisodesByTitle<T extends DedupeEpisode>(
+  eps: T[],
+  watchedKeys?: Set<string>
+): T[] {
+  const kept: T[] = [];
+  const sorted = [...eps].sort((a, b) =>
+    a.season_number !== b.season_number
+      ? a.season_number - b.season_number
+      : a.episode_number - b.episode_number
+  );
+  for (const ep of sorted) {
+    const title = normalizeEpisodeTitle(ep.name);
+    if (!title) {
+      kept.push(ep);
+      continue;
+    }
+    const dupIdx = kept.findIndex(k => {
+      if (k.season_number !== ep.season_number) return false;
+      if (normalizeEpisodeTitle(k.name) !== title) return false;
+      return overviewsMatch(k.overview, ep.overview);
+    });
+    if (dupIdx < 0) {
+      kept.push(ep);
+      continue;
+    }
+    kept[dupIdx] = preferDuplicate(kept[dupIdx], ep, watchedKeys);
+  }
+  return kept;
 }
 
 /** True when TMDB already lists this slot or the same title in that season. */
@@ -68,10 +148,12 @@ export function mergeTmdbEpisodes(
     if (byKey.has(key)) continue;
     byKey.set(key, incoming);
   }
-  return [...byKey.values()].sort((a, b) =>
-    a.season_number !== b.season_number
-      ? a.season_number - b.season_number
-      : a.episode_number - b.episode_number
+  return dedupeEpisodesByTitle(
+    [...byKey.values()].sort((a, b) =>
+      a.season_number !== b.season_number
+        ? a.season_number - b.season_number
+        : a.episode_number - b.episode_number
+    )
   );
 }
 

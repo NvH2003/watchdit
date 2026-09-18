@@ -18,7 +18,7 @@ import { tmdb, posterUrl, stillUrl, formatEuropeanDate, formatRuntime, TmdbShow,
 import db from '@/lib/db';
 import { progressUpdates, hasAired, episodeIsAvailable, findProgressFromTmdb, clampEarlyAccessDays, trackFromOf, deriveTrackFrom, TrackFrom, isBeforeTrackFrom } from '@/lib/progress';
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from '@/lib/stats';
-import { loadCatalogExtras, mergeSeasonMeta, mergeTmdbEpisodes } from '@/lib/catalog';
+import { loadCatalogExtras, mergeSeasonMeta, mergeTmdbEpisodes, dedupeEpisodesByTitle } from '@/lib/catalog';
 import { TvmazeEpisode } from '@/lib/tvmaze';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
@@ -193,7 +193,8 @@ export default function ShowDetailScreen() {
   }, [userShow?.id, userShow?.episodeRuntime, show?.id, show?.episode_run_time]);
 
   async function ensureSeason(seasonNum: number): Promise<TmdbEpisode[]> {
-    if (episodesBySeason[seasonNum]) return episodesBySeason[seasonNum];
+    const cached = episodesBySeason[seasonNum];
+    if (cached) return dedupeEpisodesByTitle(cached, watchedSet);
     setLoadingSeason(seasonNum);
     try {
       let tmdbEps: TmdbEpisode[] = [];
@@ -204,7 +205,10 @@ export default function ShowDetailScreen() {
         tmdbEps = [];
       }
       const mazeForSeason = mazeEpsRef.current.filter(e => e.season === seasonNum);
-      const eps = mergeTmdbEpisodes(tmdbEps, mazeForSeason);
+      const eps = dedupeEpisodesByTitle(
+        mergeTmdbEpisodes(tmdbEps, mazeForSeason),
+        watchedSet
+      );
       setEpisodesBySeason(prev => ({ ...prev, [seasonNum]: eps }));
       return eps;
     } catch (e) {
@@ -1052,7 +1056,10 @@ export default function ShowDetailScreen() {
           <View style={styles.seasonsSection}>
             <Text style={styles.sectionLabel}>Episodes</Text>
             {seasonMeta.map(season => {
-              const eps = episodesBySeason[season.season_number];
+              const rawEps = episodesBySeason[season.season_number];
+              const eps = rawEps
+                ? dedupeEpisodesByTitle(rawEps, watchedSet)
+                : undefined;
               const total = eps?.length || season.episode_count || 0;
               const uniqueWatched = new Set(
                 watchedEps

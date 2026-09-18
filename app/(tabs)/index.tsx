@@ -24,6 +24,7 @@ import {
   clampEarlyAccessDays,
   shiftAirDate,
   trackFromOf,
+  upcomingDropLabel,
 } from '@/lib/progress';
 import { episodeRuntimeMinutes } from '@/lib/stats';
 import { episodeTitleKey, episodeOverviewKey, watchedHintsFromRows, watchedTitleFields } from '@/lib/catalog';
@@ -184,6 +185,14 @@ export default function EpisodesScreen() {
           season != null &&
           ep != null &&
           !(Number.isFinite(nextRt) && nextRt > 0)
+        ) {
+          return true;
+        }
+        if (
+          s.status === 'upToDate' &&
+          isFutureAirDate(air, clampEarlyAccessDays(s.earlyAccessDays)) &&
+          s.upcomingDropKind !== 'season' &&
+          s.upcomingDropKind !== 'episode'
         ) {
           return true;
         }
@@ -497,6 +506,15 @@ export default function EpisodesScreen() {
           unwatchedCount={getRemainingCount(item)}
           watchedCount={getWatchedCount(item.tmdbShowId as number)}
           totalEpisodes={item.totalEpisodes as number | undefined}
+          caption={
+            activeTab === 'upcoming'
+              ? upcomingDropLabel(
+                  item.upcomingDropKind as string | undefined,
+                  item.nextSeasonNum as number | undefined,
+                  item.nextEpisodeNum as number | undefined
+                )
+              : undefined
+          }
           onPress={() => router.push(`/show/${item.tmdbShowId}`)}
         />
       );
@@ -518,6 +536,7 @@ export default function EpisodesScreen() {
         nextEpisodeRuntime={item.nextEpisodeRuntime as number | null | undefined}
         episodeRuntime={item.episodeRuntime as number | null | undefined}
         remainingCount={getRemainingCount(item)}
+        upcomingDropKind={item.upcomingDropKind as string | null | undefined}
         canMark={isOnWatchlist(item)}
         daysEarly={clampEarlyAccessDays(item.earlyAccessDays)}
         onShowPress={() => router.push(`/show/${item.tmdbShowId}`)}

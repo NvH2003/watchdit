@@ -22,6 +22,8 @@ const _schema = i.schema({
       nextEpisodeRuntime: i.number().optional(),
       unwatchedAiredCount: i.number().optional(),
       remainingAiredCount: i.number().optional(),
+      /** season = new season drop; episode = a single upcoming episode. */
+      upcomingDropKind: i.string().optional(),
       tvTimeSeriesId: i.number().optional(),
       lastTouchedAt: i.date().optional().indexed(),
       tmdbOriginalLanguage: i.string().optional(),

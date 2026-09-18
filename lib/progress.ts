@@ -196,6 +196,36 @@ export type ProgressEpisode = {
 
 export type WatchStatus = 'watching' | 'upToDate' | 'finished';
 
+export type UpcomingDropKind = 'season' | 'episode';
+
+export function classifyUpcomingDrop(opts: {
+  nextEpisodeNum: number;
+  remainingInSeason: number;
+  seasonEpisodeCount?: number;
+}): UpcomingDropKind {
+  const listed = Math.max(opts.remainingInSeason, opts.seasonEpisodeCount ?? 0);
+  if (opts.nextEpisodeNum <= 1 && listed > 1) return 'season';
+  return 'episode';
+}
+
+export function upcomingDropLabel(
+  kind?: string | null,
+  seasonNum?: number | null,
+  episodeNum?: number | null
+): string {
+  const inferred: UpcomingDropKind =
+    kind === 'season' || kind === 'episode'
+      ? kind
+      : Number(episodeNum) <= 1
+        ? 'season'
+        : 'episode';
+  if (inferred === 'season') {
+    const n = Number(seasonNum);
+    return Number.isFinite(n) && n >= 1 ? `Season ${n}` : 'New season';
+  }
+  return '1 episode';
+}
+
 export type TrackFrom = {
   season: number;
   episode: number;
@@ -270,6 +300,7 @@ export type ProgressResult = {
   totalEpisodes?: number;
   unwatchedAiredCount?: number;
   remainingAiredCount?: number;
+  upcomingDropKind?: UpcomingDropKind;
 };
 
 /**
@@ -338,6 +369,8 @@ export function computeProgress(
   if (nextFuture || nextTba) {
     const next = nextFuture ?? nextTba!;
     const runtime = Number(next.runtime);
+    const remainingInSeason = unwatched.filter(e => e.season === next.season).length;
+    const seasonEpisodeCount = episodes.filter(e => e.season === next.season).length;
     return {
       status: 'upToDate',
       nextSeasonNum: next.season,
@@ -349,6 +382,11 @@ export function computeProgress(
       totalEpisodes: episodes.length,
       unwatchedAiredCount: 0,
       remainingAiredCount: 0,
+      upcomingDropKind: classifyUpcomingDrop({
+        nextEpisodeNum: next.ep,
+        remainingInSeason,
+        seasonEpisodeCount,
+      }),
     };
   }
 
@@ -373,6 +411,7 @@ export function progressUpdates(result: ProgressResult): Record<string, unknown>
     nextEpisodeRuntime: result.nextEpisodeRuntime ?? null,
     unwatchedAiredCount: result.unwatchedAiredCount ?? 0,
     remainingAiredCount: result.remainingAiredCount ?? 0,
+    upcomingDropKind: result.upcomingDropKind ?? null,
   };
   if (result.totalEpisodes != null) updates.totalEpisodes = result.totalEpisodes;
   if (result.originalLanguage != null) updates.tmdbOriginalLanguage = result.originalLanguage;
@@ -643,6 +682,12 @@ export async function findProgressFromTmdb(
       upcoming.episode_number,
       upcoming.runtime
     );
+    const remainingInSeason = merged.filter(
+      e => e.season_number === upcoming.season_number
+    ).length;
+    const seasonEpisodeCount =
+      seasonMeta.find(m => m.season_number === upcoming.season_number)?.episode_count ??
+      catalog.filter(e => e.season_number === upcoming.season_number).length;
     return {
       status: 'upToDate',
       nextSeasonNum: upcoming.season_number,
@@ -655,6 +700,11 @@ export async function findProgressFromTmdb(
       totalEpisodes,
       unwatchedAiredCount: 0,
       remainingAiredCount: 0,
+      upcomingDropKind: classifyUpcomingDrop({
+        nextEpisodeNum: upcoming.episode_number,
+        remainingInSeason,
+        seasonEpisodeCount,
+      }),
     };
   }
 

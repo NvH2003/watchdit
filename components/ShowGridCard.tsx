@@ -8,6 +8,7 @@ interface ShowGridCardProps {
   unwatchedCount?: number;
   watchedCount?: number;
   totalEpisodes?: number;
+  caption?: string;
   onPress: () => void;
 }
 
@@ -17,6 +18,7 @@ export default function ShowGridCard({
   unwatchedCount,
   watchedCount,
   totalEpisodes,
+  caption,
   onPress,
 }: ShowGridCardProps) {
   const poster = posterUrl(posterPath, 'w342');
@@ -49,6 +51,11 @@ export default function ShowGridCard({
       <Text style={styles.name} numberOfLines={2}>
         {name}
       </Text>
+      {caption ? (
+        <Text style={styles.caption} numberOfLines={1}>
+          {caption}
+        </Text>
+      ) : null}
     </TouchableOpacity>
   );
 }
@@ -113,5 +120,11 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontWeight: '500',
     lineHeight: 16,
+  },
+  caption: {
+    color: theme.muted,
+    fontSize: 11,
+    marginTop: 2,
+    fontWeight: '500',
   },
 });

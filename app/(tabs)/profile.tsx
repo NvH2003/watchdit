@@ -26,7 +26,7 @@ import {
   formatWatchTime,
 } from '@/lib/history';
 import { computeWatchStats, formatDurationMinutes } from '@/lib/stats';
-import { readyForWatchlist, clampEarlyAccessDays } from '@/lib/progress';
+import { readyForWatchlist, clampEarlyAccessDays, trackFromOf } from '@/lib/progress';
 import {
   bucketForShow,
   lastWatchedAt,
@@ -280,7 +280,7 @@ export default function ProfileScreen() {
           fromWatchLater: true,
           originalLanguage: show.tmdbOriginalLanguage as string | undefined,
           daysEarly: clampEarlyAccessDays(show.earlyAccessDays),
-          clearTrackFrom: true,
+          trackFrom: trackFromOf(show),
         });
       }
     } catch (e) {

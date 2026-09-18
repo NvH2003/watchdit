@@ -118,6 +118,7 @@ export function posterUrl(
   size: 'w185' | 'w342' | 'w500' = 'w342'
 ): string | null {
   if (!path) return null;
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
   return `${IMG_BASE}/${size}${path}`;
 }
 
@@ -126,6 +127,7 @@ export function stillUrl(
   size: 'w185' | 'w300' = 'w185'
 ): string | null {
   if (!path) return null;
+  if (path.startsWith('http://') || path.startsWith('https://')) return path;
   return `${IMG_BASE}/${size}${path}`;
 }
 
@@ -186,6 +188,15 @@ export const tmdb = {
     get<{ tv_results: TmdbShow[] }>(`/find/${tvdbId}`, {
       external_source: 'tvdb_id',
     }),
+
+  getExternalIds: (showId: number) =>
+    get<{
+      imdb_id?: string | null;
+      tvdb_id?: number | null;
+      facebook_id?: string | null;
+      instagram_id?: string | null;
+      twitter_id?: string | null;
+    }>(`/tv/${showId}/external_ids`),
 };
 
 export function providerLogoUrl(path: string | null | undefined): string | null {

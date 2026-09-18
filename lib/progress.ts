@@ -1,5 +1,6 @@
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
+import { loadCatalogExtras, tvmazeToTmdbEpisode } from './catalog';
 
 export function parseAirDay(iso?: string | null): Date | null {
   if (!iso) return null;
@@ -52,6 +53,27 @@ export function isFutureAirDate(iso?: string | null, daysEarly = 0): boolean {
   return air.getTime() > today.getTime();
 }
 
+export type EpisodeAvailability = {
+  airDate?: string | null;
+  stillPath?: string | null;
+  runtime?: number | null;
+  overview?: string | null;
+};
+
+/** TMDB listed the episode as published (still, runtime, or synopsis) even without an air date. */
+export function episodeLooksReleased(ep: EpisodeAvailability): boolean {
+  if (ep.stillPath) return true;
+  if (episodeRuntimeMinutes(ep.runtime) != null) return true;
+  return (ep.overview?.trim().length ?? 0) >= 20;
+}
+
+/** Available to watch: aired by date, or released on TMDB with no future air date. */
+export function episodeIsAvailable(ep: EpisodeAvailability, daysEarly = 0): boolean {
+  if (hasAired(ep.airDate, daysEarly)) return true;
+  if (isFutureAirDate(ep.airDate, daysEarly)) return false;
+  return episodeLooksReleased(ep);
+}
+
 /** Local calendar day key — changes at midnight so aired lists can refresh. */
 export function localDayKey(now = new Date()): string {
   const y = now.getFullYear();
@@ -82,20 +104,21 @@ export function readyForWatchlist(
   }
 ): boolean {
   if (status !== 'watching' && status !== 'upToDate') return false;
-  if (!hasAired(nextEpisodeAirDate, opts?.daysEarly)) return false;
   const season = opts?.nextSeasonNum;
   const ep = opts?.nextEpisodeNum;
   if (
     opts?.watchedKeys &&
-    season != null &&
-    ep != null &&
-    Number.isFinite(season) &&
-    Number.isFinite(ep) &&
+    hasNextPointer(season, ep) &&
     opts.watchedKeys.has(`${season}x${ep}`)
   ) {
     return false;
   }
-  return true;
+  if (hasAired(nextEpisodeAirDate, opts?.daysEarly)) return true;
+  return (
+    status === 'watching' &&
+    hasNextPointer(season, ep) &&
+    !isFutureAirDate(nextEpisodeAirDate, opts?.daysEarly)
+  );
 }
 
 function hasNextPointer(
@@ -154,6 +177,7 @@ export type ProgressEpisode = {
   airDate: string;
   stillPath?: string | null;
   runtime?: number | null;
+  overview?: string | null;
 };
 
 export type WatchStatus = 'watching' | 'upToDate' | 'finished';
@@ -252,11 +276,20 @@ export function computeProgress(
       !watched.has(`${e.season}x${e.ep}`) &&
       !isBeforeTrackFrom(e.season, e.ep, trackFrom)
   );
-  const unwatchedAired = unwatched.filter(e => hasAired(e.airDate, daysEarly));
+  const unwatchedAired = unwatched.filter(e =>
+    episodeIsAvailable(
+      { airDate: e.airDate, stillPath: e.stillPath, runtime: e.runtime, overview: e.overview },
+      daysEarly
+    )
+  );
   const nextAired = unwatchedAired[0];
   const nextFuture = unwatched.find(e => isFutureAirDate(e.airDate, daysEarly));
   const nextTba = unwatched.find(
-    e => !hasAired(e.airDate, daysEarly) && !isFutureAirDate(e.airDate, daysEarly)
+    e =>
+      !episodeIsAvailable(
+        { airDate: e.airDate, stillPath: e.stillPath, runtime: e.runtime, overview: e.overview },
+        daysEarly
+      ) && !isFutureAirDate(e.airDate, daysEarly)
   );
   const ended = isShowEnded(tmdbStatus);
 
@@ -354,6 +387,7 @@ export async function findProgressFromTmdb(
     air_date: string;
     still_path: string | null;
     runtime?: number | null;
+    overview?: string;
   };
 
   function toNext(e: {
@@ -363,6 +397,7 @@ export async function findProgressFromTmdb(
     air_date?: string | null;
     still_path?: string | null;
     runtime?: number | null;
+    overview?: string | null;
   }): NextEp | null {
     const season_number = Number(e.season_number);
     const episode_number = Number(e.episode_number);
@@ -377,12 +412,34 @@ export async function findProgressFromTmdb(
       air_date: e.air_date ?? '',
       still_path: e.still_path ?? null,
       runtime: e.runtime,
+      overview: e.overview ?? '',
     };
   }
 
   const airedUnwatched: NextEp[] = [];
   let nextFuture: NextEp | null = null;
   let nextTba: NextEp | null = null;
+  const byKey = new Map<string, NextEp>();
+  const emptySeasonStubs: { season: number; air: string }[] = [];
+
+  function ingest(item: NextEp | null) {
+    if (!item) return;
+    const key = `${item.season_number}x${item.episode_number}`;
+    const prev = byKey.get(key);
+    if (!prev) {
+      byKey.set(key, item);
+      return;
+    }
+    byKey.set(key, {
+      season_number: prev.season_number,
+      episode_number: prev.episode_number,
+      name: prev.name || item.name,
+      air_date: prev.air_date || item.air_date,
+      still_path: prev.still_path || item.still_path,
+      runtime: prev.runtime || item.runtime,
+      overview: prev.overview || item.overview,
+    });
+  }
 
   for (let s = from; s <= totalSeasons; s++) {
     let season;
@@ -392,54 +449,87 @@ export async function findProgressFromTmdb(
       continue;
     }
     const eps = (season.episodes ?? []).filter(e => e.season_number > 0);
-
-    for (const e of eps) {
-      const item = toNext(e);
-      if (!item) continue;
-      if (hasAired(item.air_date, daysEarly)) {
-        airedUnwatched.push(item);
-        continue;
-      }
-      if (isFutureAirDate(item.air_date, daysEarly)) {
-        if (!nextFuture) nextFuture = item;
-        continue;
-      }
-      if (!nextTba) nextTba = item;
+    for (const e of eps) ingest(toNext(e));
+    if (eps.length === 0) {
+      emptySeasonStubs.push({
+        season: s,
+        air:
+          season.air_date ??
+          seasonMeta.find(m => m.season_number === s)?.air_date ??
+          '',
+      });
     }
+  }
 
-    const seasonAir =
-      season.air_date ??
-      seasonMeta.find(m => m.season_number === s)?.air_date ??
-      '';
-    const seasonTouched = eps.some(
-      e =>
-        watched.has(`${e.season_number}x${e.episode_number}`) ||
-        hasAired(e.air_date, daysEarly)
-    );
+  try {
+    const extras = await loadCatalogExtras(tmdbShowId, {
+      name: details.name,
+      original_name: details.original_name,
+    });
+    for (const maze of extras.mazeEpisodes) {
+      if (maze.season < from) continue;
+      ingest(toNext(tvmazeToTmdbEpisode(maze)));
+    }
+  } catch (e) {
+    console.warn('TVmaze catalog merge failed', e);
+  }
+
+  for (const stub of emptySeasonStubs) {
+    const hasSeason = [...byKey.keys()].some(k => k.startsWith(`${stub.season}x`));
+    if (hasSeason) continue;
+    ingest({
+      season_number: stub.season,
+      episode_number: 1,
+      name: '',
+      air_date: stub.air,
+      still_path: null,
+    });
+  }
+
+  const merged = [...byKey.values()].sort((a, b) =>
+    a.season_number !== b.season_number
+      ? a.season_number - b.season_number
+      : a.episode_number - b.episode_number
+  );
+
+  for (const item of merged) {
     if (
-      airedUnwatched.length === 0 &&
-      !nextFuture &&
-      !nextTba &&
-      !seasonTouched &&
-      eps.length === 0
+      episodeIsAvailable(
+        {
+          airDate: item.air_date,
+          stillPath: item.still_path,
+          runtime: item.runtime,
+          overview: item.overview,
+        },
+        daysEarly
+      )
     ) {
-      const stub: NextEp = {
-        season_number: s,
-        episode_number: 1,
-        name: '',
-        air_date: seasonAir,
-        still_path: null,
-      };
-      if (isFutureAirDate(seasonAir, daysEarly)) nextFuture = stub;
-      else if (!hasAired(seasonAir, daysEarly)) nextTba = stub;
+      airedUnwatched.push(item);
+      continue;
     }
+    if (isFutureAirDate(item.air_date, daysEarly)) {
+      if (!nextFuture) nextFuture = item;
+      continue;
+    }
+    if (!nextTba) nextTba = item;
   }
 
   if (airedUnwatched.length === 0 && !nextFuture && !nextTba) {
     const fallback = toNext(details.next_episode_to_air ?? {});
     if (fallback) {
-      if (hasAired(fallback.air_date, daysEarly)) airedUnwatched.push(fallback);
-      else if (isFutureAirDate(fallback.air_date, daysEarly)) nextFuture = fallback;
+      if (
+        episodeIsAvailable(
+          {
+            airDate: fallback.air_date,
+            stillPath: fallback.still_path,
+            runtime: fallback.runtime,
+            overview: fallback.overview,
+          },
+          daysEarly
+        )
+      ) {
+        airedUnwatched.push(fallback);
+      } else if (isFutureAirDate(fallback.air_date, daysEarly)) nextFuture = fallback;
       else nextTba = fallback;
     }
   }

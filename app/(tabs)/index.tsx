@@ -107,6 +107,25 @@ export default function EpisodesScreen() {
   const checkingRef = useRef(false);
   const recategorizedRef = useRef(false);
 
+  function isOnWatchlist(s: (typeof allShows)[0]) {
+    const tmdbId = s.tmdbShowId as number;
+    const watchedKeys = new Set(
+      watchedEps
+        .filter(e => e.tmdbShowId === tmdbId)
+        .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+    );
+    return readyForWatchlist(
+      s.status as string | undefined,
+      s.nextEpisodeAirDate as string | undefined,
+      {
+        nextSeasonNum: s.nextSeasonNum as number | undefined,
+        nextEpisodeNum: s.nextEpisodeNum as number | undefined,
+        watchedKeys,
+        daysEarly: clampEarlyAccessDays(s.earlyAccessDays),
+      }
+    );
+  }
+
   useEffect(() => {
     if (!undo) return;
     const t = setTimeout(() => setUndo(null), UNDO_MS);
@@ -217,24 +236,7 @@ export default function EpisodesScreen() {
     }, [user?.id, allShows.length, watchedEps.length, dayKey])
   );
 
-  const watchlistShows = allShows.filter(s => {
-    const tmdbId = s.tmdbShowId as number;
-    const watchedKeys = new Set(
-      watchedEps
-        .filter(e => e.tmdbShowId === tmdbId)
-        .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
-    );
-    return readyForWatchlist(
-      s.status as string | undefined,
-      s.nextEpisodeAirDate as string | undefined,
-      {
-        nextSeasonNum: s.nextSeasonNum as number | undefined,
-        nextEpisodeNum: s.nextEpisodeNum as number | undefined,
-        watchedKeys,
-        daysEarly: clampEarlyAccessDays(s.earlyAccessDays),
-      }
-    );
-  });
+  const watchlistShows = allShows.filter(s => isOnWatchlist(s));
   const upcomingShows = allShows.filter(s => {
     const tmdbId = s.tmdbShowId as number;
     const watchedKeys = new Set(
@@ -338,10 +340,10 @@ export default function EpisodesScreen() {
           tmdbShowId: tmdbId,
           watchedKeys,
           fromWatchLater: show.status === 'watchLater',
-          startSeason: 1,
+          startSeason: trackFromOf(show)?.season ?? 1,
           originalLanguage: (show.tmdbOriginalLanguage as string | undefined) || undefined,
           daysEarly: clampEarlyAccessDays(show.earlyAccessDays),
-          clearTrackFrom: true,
+          trackFrom: trackFromOf(show),
         });
         return;
       } catch (e) {
@@ -357,7 +359,7 @@ export default function EpisodesScreen() {
 
   async function handleCheck(show: (typeof allShows)[0]) {
     if (!user) return;
-    if (!hasAired(show.nextEpisodeAirDate as string | undefined, clampEarlyAccessDays(show.earlyAccessDays))) return;
+    if (!isOnWatchlist(show)) return;
     const sId = show.id;
     const tmdbId = show.tmdbShowId as number;
     const curSeason = (show.nextSeasonNum as number | undefined) ?? 1;
@@ -500,10 +502,7 @@ export default function EpisodesScreen() {
         nextEpisodeRuntime={item.nextEpisodeRuntime as number | null | undefined}
         episodeRuntime={item.episodeRuntime as number | null | undefined}
         remainingCount={getRemainingCount(item)}
-        canMark={hasAired(
-          item.nextEpisodeAirDate as string | undefined,
-          clampEarlyAccessDays(item.earlyAccessDays)
-        )}
+        canMark={isOnWatchlist(item)}
         daysEarly={clampEarlyAccessDays(item.earlyAccessDays)}
         onShowPress={() => router.push(`/show/${item.tmdbShowId}`)}
         onCheckPress={() => handleCheck(item)}

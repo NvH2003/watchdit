@@ -20,12 +20,18 @@ export default function SearchableDropdown({
   options,
   placeholder = 'Select…',
   searchPlaceholder = 'Search…',
+  title = 'Collection',
+  emptyText = 'No collections match.',
+  embedded = false,
 }: {
   value: string;
   onChange: (key: string) => void;
   options: SearchableDropdownOption[];
   placeholder?: string;
   searchPlaceholder?: string;
+  title?: string;
+  emptyText?: string;
+  embedded?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState('');
@@ -50,7 +56,7 @@ export default function SearchableDropdown({
   return (
     <>
       <TouchableOpacity
-        style={styles.trigger}
+        style={[styles.trigger, embedded && styles.triggerEmbedded]}
         onPress={() => setOpen(true)}
         accessibilityRole="button"
         accessibilityLabel={selected?.label ?? placeholder}
@@ -66,7 +72,7 @@ export default function SearchableDropdown({
         <View style={styles.modalRoot}>
           <Pressable style={styles.backdrop} onPress={close} />
           <View style={styles.sheet}>
-            <Text style={styles.sheetTitle}>Collection</Text>
+            <Text style={styles.sheetTitle}>{title}</Text>
             <View style={styles.searchRow}>
               <Ionicons name="search-outline" size={16} color={theme.muted} />
               <TextInput
@@ -93,7 +99,7 @@ export default function SearchableDropdown({
               keyboardShouldPersistTaps="handled"
               style={styles.list}
               ListEmptyComponent={
-                <Text style={styles.empty}>No collections match.</Text>
+                <Text style={styles.empty}>{emptyText}</Text>
               }
               renderItem={({ item }) => {
                 const active = item.key === value;
@@ -135,6 +141,12 @@ const styles = StyleSheet.create({
     backgroundColor: theme.elevated,
     borderWidth: 1,
     borderColor: theme.border,
+  },
+  triggerEmbedded: {
+    marginHorizontal: 0,
+    marginBottom: 0,
+    paddingVertical: 8,
+    minWidth: 160,
   },
   triggerLabel: {
     flex: 1,

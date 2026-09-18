@@ -41,6 +41,7 @@ import {
   isGdprBundle,
 } from '@/lib/gdprImport';
 import { findProgressFromTmdb, progressUpdates, deriveTrackFrom, TrackFrom } from '@/lib/progress';
+import { watchedHintsFromRows } from '@/lib/catalog';
 import { theme } from '@/constants/theme';
 import { createUserShowTx } from '@/lib/userShows';
 import { createUserMovieTx } from '@/lib/userMovies';
@@ -610,7 +611,10 @@ export default function ImportScreen() {
               watched,
               item.startSeason,
               0,
-              item.trackFrom
+              item.trackFrom,
+              watchedHintsFromRows(
+                (dbData?.watchedEpisodes ?? []).filter(e => e.tmdbShowId === item.tmdbId)
+              )
             );
             await transactWithRetry([
               db.tx.userShows[item.entityId].update({

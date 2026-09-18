@@ -26,6 +26,7 @@ import {
   trackFromOf,
 } from '@/lib/progress';
 import { episodeRuntimeMinutes } from '@/lib/stats';
+import { episodeTitleKey, episodeOverviewKey, watchedHintsFromRows, watchedTitleFields } from '@/lib/catalog';
 import { tmdb } from '@/lib/tmdb';
 import { theme } from '@/constants/theme';
 import { uniqueByTmdbShowId, activateShowWatching } from '@/lib/userShows';
@@ -200,10 +201,9 @@ export default function EpisodesScreen() {
             if (cancelled) return;
             const show = toCheck[i];
             const tmdbId = show.tmdbShowId as number;
+            const rows = watchedEps.filter(e => e.tmdbShowId === tmdbId);
             const watched = new Set(
-              watchedEps
-                .filter(e => e.tmdbShowId === tmdbId)
-                .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+              rows.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
             );
             const startSeason = (show.nextSeasonNum as number | undefined) ?? 1;
             if (i > 0 && i % 5 === 0) {
@@ -214,7 +214,8 @@ export default function EpisodesScreen() {
               watched,
               startSeason,
               clampEarlyAccessDays(show.earlyAccessDays),
-              trackFromOf(show)
+              trackFromOf(show),
+              watchedHintsFromRows(rows)
             );
             if (cancelled) return;
             await db.transact([
@@ -329,10 +330,9 @@ export default function EpisodesScreen() {
     const show = allShows.find(s => s.id === showId);
     if (status === 'watching' && show) {
       const tmdbId = show.tmdbShowId as number;
+      const rows = watchedEps.filter(e => e.tmdbShowId === tmdbId);
       const watchedKeys = new Set(
-        watchedEps
-          .filter(e => e.tmdbShowId === tmdbId)
-          .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+        rows.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
       );
       try {
         await activateShowWatching({
@@ -344,6 +344,7 @@ export default function EpisodesScreen() {
           originalLanguage: (show.tmdbOriginalLanguage as string | undefined) || undefined,
           daysEarly: clampEarlyAccessDays(show.earlyAccessDays),
           trackFrom: trackFromOf(show),
+          watchedHints: watchedHintsFromRows(rows),
         });
         return;
       } catch (e) {
@@ -386,11 +387,15 @@ export default function EpisodesScreen() {
     const transactions: ReturnType<typeof db.tx.watchedEpisodes[string]['update']>[] = [];
 
     let episodeRuntime: number | null = null;
+    let episodeName = (show.nextEpisodeName as string | undefined) ?? '';
+    let episodeOverview = '';
     if (episodeId) {
       try {
         const season = await tmdb.getSeason(tmdbId, curSeason);
         const ep = (season.episodes ?? []).find(e => e.episode_number === curEpisode);
         episodeRuntime = episodeRuntimeMinutes(ep?.runtime);
+        if (ep?.name) episodeName = ep.name;
+        if (ep?.overview) episodeOverview = ep.overview;
       } catch {
         episodeRuntime = episodeRuntimeMinutes(show.episodeRuntime as number | undefined);
       }
@@ -402,24 +407,35 @@ export default function EpisodesScreen() {
           episodeNumber: curEpisode,
           watchedAt: now,
           ...(episodeRuntime != null ? { runtime: episodeRuntime } : {}),
+          ...watchedTitleFields(episodeName, episodeOverview),
         }).link({ $user: user.id })
       );
     }
 
     try {
+      const rows = watchedEps.filter(e => e.tmdbShowId === tmdbId);
       const watched = new Set(
-        watchedEps
-          .filter(e => e.tmdbShowId === tmdbId)
-          .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+        rows.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
       );
       watched.add(`${curSeason}x${curEpisode}`);
+      const nextTitleKey = episodeTitleKey(episodeName);
+      const nextOverviewKey = episodeOverviewKey(episodeOverview);
 
       const progress = await findProgressFromTmdb(
         tmdbId,
         watched,
         curSeason,
         clampEarlyAccessDays(show.earlyAccessDays),
-        trackFromOf(show)
+        trackFromOf(show),
+        [
+          ...watchedHintsFromRows(rows),
+          {
+            season: curSeason,
+            ep: curEpisode,
+            titleKey: nextTitleKey || undefined,
+            overviewKey: nextOverviewKey || undefined,
+          },
+        ]
       );
       await db.transact([
         ...transactions,

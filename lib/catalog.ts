@@ -34,6 +34,50 @@ export function normalizeEpisodeTitle(name?: string | null): string {
     .replace(/[^a-z0-9]+/g, '');
 }
 
+export function episodeTitleKey(name?: string | null): string {
+  return normalizeEpisodeTitle(name);
+}
+
+export function episodeOverviewKey(text?: string | null): string {
+  return normalizeOverview(text);
+}
+
+export type WatchedHint = {
+  season: number;
+  ep: number;
+  titleKey?: string | null;
+  overviewKey?: string | null;
+};
+
+export function watchedHintsFromRows(
+  rows: {
+    seasonNumber: number;
+    episodeNumber: number;
+    titleKey?: string | null;
+    overviewKey?: string | null;
+  }[]
+): WatchedHint[] {
+  return rows.map(e => ({
+    season: Number(e.seasonNumber),
+    ep: Number(e.episodeNumber),
+    titleKey: e.titleKey ?? undefined,
+    overviewKey: e.overviewKey ?? undefined,
+  }));
+}
+
+/** Extra fields to persist so TMDB numbering remaps keep a check. */
+export function watchedTitleFields(
+  name?: string | null,
+  overview?: string | null
+): { titleKey?: string; overviewKey?: string } {
+  const titleKey = episodeTitleKey(name);
+  const overviewKey = episodeOverviewKey(overview);
+  return {
+    ...(titleKey ? { titleKey } : {}),
+    ...(overviewKey ? { overviewKey } : {}),
+  };
+}
+
 export function normalizeOverview(text?: string | null): string {
   return stripHtml(text)
     .normalize('NFKD')
@@ -42,13 +86,36 @@ export function normalizeOverview(text?: string | null): string {
     .replace(/[^a-z0-9]+/g, '');
 }
 
+/** Dice coefficient on character bigrams — extra sentences still score high. */
+function overviewDice(a: string, b: string): number {
+  if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
+  const counts = new Map<string, number>();
+  for (let i = 0; i < a.length - 1; i++) {
+    const gram = a.slice(i, i + 2);
+    counts.set(gram, (counts.get(gram) ?? 0) + 1);
+  }
+  let overlap = 0;
+  for (let i = 0; i < b.length - 1; i++) {
+    const gram = b.slice(i, i + 2);
+    const n = counts.get(gram) ?? 0;
+    if (n > 0) {
+      overlap++;
+      counts.set(gram, n - 1);
+    }
+  }
+  return (2 * overlap) / (a.length + b.length - 2);
+}
+
 export function overviewsMatch(a?: string | null, b?: string | null): boolean {
   const na = normalizeOverview(a);
   const nb = normalizeOverview(b);
   if (!na && !nb) return true;
   if (!na || !nb) return false;
   if (na === nb) return true;
-  return na.includes(nb) || nb.includes(na);
+  if (na.includes(nb) || nb.includes(na)) return true;
+  const shorter = na.length <= nb.length ? na : nb;
+  if (shorter.length < 24) return false;
+  return overviewDice(na, nb) >= 0.82;
 }
 
 export type DedupeEpisode = {
@@ -58,6 +125,79 @@ export type DedupeEpisode = {
   overview?: string | null;
   id?: number;
 };
+
+function sameWatchIdentity(
+  season: number,
+  title: string,
+  overview: string | null | undefined,
+  ep: DedupeEpisode
+): boolean {
+  if (!title || ep.season_number !== season) return false;
+  if (normalizeEpisodeTitle(ep.name) !== title) return false;
+  return overviewsMatch(overview, ep.overview);
+}
+
+/**
+ * Same-season rows share a watch identity only when title and synopsis match.
+ * Different overviews (part 1 vs part 2) stay separate. Stored keys keep the
+ * check when TMDB later changes the episode number.
+ */
+export function expandWatchedKeys(
+  watched: Set<string>,
+  catalog: DedupeEpisode[],
+  hints?: WatchedHint[]
+): Set<string> {
+  const keys = new Set(watched);
+  const identities: { season: number; title: string; overview?: string | null }[] = [];
+
+  function addIdentity(season: number, title: string, overview?: string | null) {
+    if (!title) return;
+    if (
+      identities.some(
+        id =>
+          id.season === season &&
+          id.title === title &&
+          overviewsMatch(id.overview, overview)
+      )
+    ) {
+      return;
+    }
+    identities.push({ season, title, overview });
+  }
+
+  for (const h of hints ?? []) {
+    const title = (h.titleKey ?? '').trim();
+    const overview = (h.overviewKey ?? '').trim();
+    if (!title || !overview) continue;
+    addIdentity(h.season, title, overview);
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const ep of catalog) {
+      const k = `${ep.season_number}x${ep.episode_number}`;
+      const title = normalizeEpisodeTitle(ep.name);
+      const marked =
+        keys.has(k) ||
+        identities.some(id =>
+          sameWatchIdentity(id.season, id.title, id.overview, ep)
+        );
+      if (!marked) continue;
+      if (!keys.has(k)) {
+        keys.add(k);
+        changed = true;
+      }
+      if (title) {
+        const before = identities.length;
+        addIdentity(ep.season_number, title, ep.overview);
+        if (identities.length > before) changed = true;
+      }
+    }
+  }
+
+  return keys;
+}
 
 function isMazeId(id?: number): boolean {
   return id != null && id >= MAZE_ID_OFFSET;

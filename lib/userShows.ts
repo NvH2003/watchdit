@@ -10,6 +10,7 @@ import {
   clampEarlyAccessDays,
   TrackFrom,
 } from './progress';
+import { WatchedHint } from './catalog';
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
 import { staleCutoff } from './watchlist';
@@ -34,13 +35,15 @@ export async function activateShowWatching(opts: {
   trackFrom?: TrackFrom | null;
   /** Clear a catch-up floor so backlog can appear on Continue watching. */
   clearTrackFrom?: boolean;
+  watchedHints?: WatchedHint[];
 }): Promise<void> {
   const progress = await findProgressFromTmdb(
     opts.tmdbShowId,
     opts.watchedKeys,
     opts.startSeason ?? 1,
     clampEarlyAccessDays(opts.daysEarly),
-    opts.clearTrackFrom ? null : opts.trackFrom
+    opts.clearTrackFrom ? null : opts.trackFrom,
+    opts.watchedHints
   );
   const updates: Record<string, unknown> = {
     ...progressUpdates(progress),

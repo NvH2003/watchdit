@@ -41,6 +41,10 @@ const _schema = i.schema({
       watchedAt: i.date(),
       /** Exact TMDB episode runtime in minutes when known. */
       runtime: i.number().optional(),
+      /** Normalized episode title so checks survive TMDB numbering remaps. */
+      titleKey: i.string().optional(),
+      /** Normalized synopsis; part 1 vs part 2 with the same title stay distinct. */
+      overviewKey: i.string().optional(),
     }),
     userMovies: i.entity({
       tmdbMovieId: i.number().indexed(),

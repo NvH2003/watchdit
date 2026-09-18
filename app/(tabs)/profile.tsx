@@ -15,6 +15,7 @@ import db from '@/lib/db';
 import { theme } from '@/constants/theme';
 import { uniqueByTmdbShowId, activateShowWatching } from '@/lib/userShows';
 import { uniqueByTmdbMovieId } from '@/lib/userMovies';
+import { watchedHintsFromRows } from '@/lib/catalog';
 import { posterUrl } from '@/lib/tmdb';
 import {
   buildCombinedWatchHistory,
@@ -268,10 +269,9 @@ export default function ProfileScreen() {
       for (const show of targets) {
         const tmdbId = Number(show.tmdbShowId);
         if (!Number.isFinite(tmdbId)) continue;
+        const rows = watchedEpisodes.filter(e => e.tmdbShowId === tmdbId);
         const watchedKeys = new Set(
-          watchedEpisodes
-            .filter(e => e.tmdbShowId === tmdbId)
-            .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+          rows.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
         );
         await activateShowWatching({
           userShowId: show.id,
@@ -281,6 +281,7 @@ export default function ProfileScreen() {
           originalLanguage: show.tmdbOriginalLanguage as string | undefined,
           daysEarly: clampEarlyAccessDays(show.earlyAccessDays),
           trackFrom: trackFromOf(show),
+          watchedHints: watchedHintsFromRows(rows),
         });
       }
     } catch (e) {

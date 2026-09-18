@@ -18,7 +18,7 @@ import { tmdb, posterUrl, stillUrl, formatEuropeanDate, formatRuntime, TmdbShow,
 import db from '@/lib/db';
 import { progressUpdates, hasAired, episodeIsAvailable, findProgressFromTmdb, clampEarlyAccessDays, trackFromOf, deriveTrackFrom, TrackFrom, isBeforeTrackFrom } from '@/lib/progress';
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from '@/lib/stats';
-import { loadCatalogExtras, mergeSeasonMeta, mergeTmdbEpisodes, dedupeEpisodesByTitle } from '@/lib/catalog';
+import { loadCatalogExtras, mergeSeasonMeta, mergeTmdbEpisodes, dedupeEpisodesByTitle, expandWatchedKeys, watchedHintsFromRows, watchedTitleFields, episodeTitleKey, episodeOverviewKey } from '@/lib/catalog';
 import { TvmazeEpisode } from '@/lib/tvmaze';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
@@ -80,8 +80,10 @@ export default function ShowDetailScreen() {
   const userShow = uniqueByTmdbShowId(dbData?.userShows ?? [])[0] ?? null;
   const daysEarly = clampEarlyAccessDays(userShow?.earlyAccessDays);
   const watchedEps = dbData?.watchedEpisodes ?? [];
-  const watchedSet = new Set(
-    watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
+  const watchedSet = expandWatchedKeys(
+    new Set(watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)),
+    Object.values(episodesBySeason).flat(),
+    watchedHintsFromRows(watchedEps)
   );
 
   function epAvailable(ep: Pick<TmdbEpisode, 'air_date' | 'still_path' | 'runtime' | 'overview'>) {
@@ -108,6 +110,22 @@ export default function ShowDetailScreen() {
     if (extras.length === 0) return;
     db.transact(extras.map(eid => db.tx.watchedEpisodes[eid].delete())).catch(() => {});
   }, [user, watchedEps]);
+
+  useEffect(() => {
+    if (!user) return;
+    const txs = [];
+    for (const w of watchedEps) {
+      const ep = episodesBySeason[w.seasonNumber]?.find(
+        e => e.episode_number === w.episodeNumber
+      );
+      const fields = watchedTitleFields(ep?.name, ep?.overview);
+      if (!fields.titleKey && !fields.overviewKey) continue;
+      if (w.titleKey && (!fields.overviewKey || w.overviewKey)) continue;
+      txs.push(db.tx.watchedEpisodes[w.id].update(fields));
+    }
+    if (txs.length === 0) return;
+    db.transact(txs).catch(() => {});
+  }, [user, watchedEps, episodesBySeason]);
 
   function askConfirm(
     title: string,
@@ -308,9 +326,21 @@ export default function ShowDetailScreen() {
   async function collectUnwatchedBefore(
     seasonNum: number,
     episodeNum: number
-  ): Promise<{ season: number; ep: number; runtime?: number | null }[]> {
+  ): Promise<{
+    season: number;
+    ep: number;
+    runtime?: number | null;
+    name?: string | null;
+    overview?: string | null;
+  }[]> {
     const floor = trackFromOf(userShow);
-    const out: { season: number; ep: number; runtime?: number | null }[] = [];
+    const out: {
+      season: number;
+      ep: number;
+      runtime?: number | null;
+      name?: string | null;
+      overview?: string | null;
+    }[] = [];
     for (const s of seasonMeta) {
       if (s.season_number <= 0 || s.season_number > seasonNum) continue;
       const eps = await ensureSeason(s.season_number);
@@ -328,6 +358,8 @@ export default function ShowDetailScreen() {
           season: ep.season_number,
           ep: ep.episode_number,
           runtime: episodeRuntimeMinutes(ep.runtime),
+          name: ep.name,
+          overview: ep.overview,
         });
       }
     }
@@ -400,6 +432,7 @@ export default function ShowDetailScreen() {
           episodeNumber: episodeNum,
           watchedAt: new Date().toISOString(),
           ...(runtime != null ? { runtime } : {}),
+          ...watchedTitleFields(ep?.name, ep?.overview),
         }).link({ $user: user.id }),
       ]);
       watched.add(`${seasonNum}x${episodeNum}`);
@@ -432,7 +465,14 @@ export default function ShowDetailScreen() {
         1
     );
 
-    findProgressFromTmdb(showId, watched, startSeason, daysEarly, stored)
+    findProgressFromTmdb(
+      showId,
+      watched,
+      startSeason,
+      daysEarly,
+      stored,
+      progressHints(watched)
+    )
       .then(progress => {
         if (!patch && userShow?.status === 'watchLater') return;
         const updates: Record<string, unknown> = progressUpdates(progress);
@@ -445,7 +485,13 @@ export default function ShowDetailScreen() {
   }
 
   async function writeWatched(
-    episodes: { season: number; ep: number; runtime?: number | null }[]
+    episodes: {
+      season: number;
+      ep: number;
+      runtime?: number | null;
+      name?: string | null;
+      overview?: string | null;
+    }[]
   ) {
     if (!user || episodes.length === 0) return;
     const seen = new Set(watchedSet);
@@ -468,6 +514,7 @@ export default function ShowDetailScreen() {
             episodeNumber: item.ep,
             watchedAt: now,
             ...(item.runtime != null && item.runtime > 0 ? { runtime: item.runtime } : {}),
+            ...watchedTitleFields(item.name, item.overview),
           }).link({ $user: user.id })
         )
       );
@@ -476,7 +523,13 @@ export default function ShowDetailScreen() {
 
   async function collectAiredUnwatched(
     seasonNumber: number
-  ): Promise<{ season: number; ep: number; runtime?: number | null }[]> {
+  ): Promise<{
+    season: number;
+    ep: number;
+    runtime?: number | null;
+    name?: string | null;
+    overview?: string | null;
+  }[]> {
     const eps = await ensureSeason(seasonNumber);
     return eps
       .filter(
@@ -488,6 +541,8 @@ export default function ShowDetailScreen() {
         season: seasonNumber,
         ep: ep.episode_number,
         runtime: episodeRuntimeMinutes(ep.runtime),
+        name: ep.name,
+        overview: ep.overview,
       }));
   }
 
@@ -576,6 +631,25 @@ export default function ShowDetailScreen() {
     return entityId;
   }
 
+  function progressHints(watchedKeys: Set<string>) {
+    const hints = watchedHintsFromRows(watchedEps);
+    for (const key of watchedKeys) {
+      const [season, ep] = key.split('x').map(Number);
+      const listed = episodesBySeason[season]?.find(e => e.episode_number === ep);
+      const titleKey = episodeTitleKey(listed?.name);
+      const overviewKey = episodeOverviewKey(listed?.overview);
+      if (titleKey || overviewKey) {
+        hints.push({
+          season,
+          ep,
+          titleKey: titleKey || undefined,
+          overviewKey: overviewKey || undefined,
+        });
+      }
+    }
+    return hints;
+  }
+
   async function applyProgress(
     userShowId: string,
     watchedKeys: Set<string>,
@@ -588,7 +662,8 @@ export default function ShowDetailScreen() {
       watchedKeys,
       floor?.season ?? 1,
       daysEarly,
-      floor
+      floor,
+      progressHints(watchedKeys)
     );
     const updates: Record<string, unknown> = {
       ...progressUpdates(progress),
@@ -734,7 +809,8 @@ export default function ShowDetailScreen() {
         watched,
         1,
         days,
-        trackFromOf(userShow)
+        trackFromOf(userShow),
+        progressHints(watched)
       );
       await db.transact([
         db.tx.userShows[userShowId].update({
@@ -789,6 +865,7 @@ export default function ShowDetailScreen() {
             originalLanguage: show?.original_language ?? undefined,
             daysEarly,
             trackFrom: trackFromOf(userShow),
+            watchedHints: watchedHintsFromRows(watchedEps),
           });
         } catch (e) {
           console.warn('Failed to activate watching', e);

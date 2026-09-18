@@ -1,6 +1,14 @@
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
-import { loadCatalogExtras, tvmazeToTmdbEpisode, tmdbAlreadyHasEpisode, dedupeEpisodesByTitle } from './catalog';
+import {
+  loadCatalogExtras,
+  tvmazeToTmdbEpisode,
+  tmdbAlreadyHasEpisode,
+  dedupeEpisodesByTitle,
+  expandWatchedKeys,
+  WatchedHint,
+  DedupeEpisode,
+} from './catalog';
 
 export function parseAirDay(iso?: string | null): Date | null {
   if (!iso) return null;
@@ -367,7 +375,8 @@ export async function findProgressFromTmdb(
   watched: Set<string>,
   startSeason = 1,
   daysEarly = 0,
-  trackFrom?: TrackFrom | null
+  trackFrom?: TrackFrom | null,
+  watchedHints?: WatchedHint[]
 ): Promise<ProgressResult> {
   const details = await tmdb.getShow(tmdbShowId);
   const originalLanguage = details.original_language || '';
@@ -404,7 +413,6 @@ export async function findProgressFromTmdb(
     if (!Number.isFinite(season_number) || season_number < 1) return null;
     if (!Number.isFinite(episode_number) || episode_number < 1) return null;
     if (isBeforeTrackFrom(season_number, episode_number, trackFrom)) return null;
-    if (watched.has(`${season_number}x${episode_number}`)) return null;
     return {
       season_number,
       episode_number,
@@ -442,6 +450,7 @@ export async function findProgressFromTmdb(
   }
 
   const tmdbListed: { season_number: number; episode_number: number; name?: string }[] = [];
+  const catalog: DedupeEpisode[] = [];
 
   for (let s = from; s <= totalSeasons; s++) {
     let season;
@@ -456,6 +465,12 @@ export async function findProgressFromTmdb(
         season_number: e.season_number,
         episode_number: e.episode_number,
         name: e.name,
+      });
+      catalog.push({
+        season_number: e.season_number,
+        episode_number: e.episode_number,
+        name: e.name,
+        overview: e.overview,
       });
       ingest(toNext(e));
     }
@@ -478,7 +493,9 @@ export async function findProgressFromTmdb(
     for (const maze of extras.mazeEpisodes) {
       if (maze.season < from) continue;
       if (tmdbAlreadyHasEpisode(tmdbListed, maze)) continue;
-      ingest(toNext(tvmazeToTmdbEpisode(maze)));
+      const mapped = tvmazeToTmdbEpisode(maze);
+      catalog.push(mapped);
+      ingest(toNext(mapped));
     }
   } catch (e) {
     console.warn('TVmaze catalog merge failed', e);
@@ -496,13 +513,18 @@ export async function findProgressFromTmdb(
     });
   }
 
+  const watchedKeys = expandWatchedKeys(watched, catalog, watchedHints);
+  for (const key of [...byKey.keys()]) {
+    if (watchedKeys.has(key)) byKey.delete(key);
+  }
+
   const merged = dedupeEpisodesByTitle(
     [...byKey.values()].sort((a, b) =>
       a.season_number !== b.season_number
         ? a.season_number - b.season_number
         : a.episode_number - b.episode_number
     ),
-    watched
+    watchedKeys
   );
 
   for (const item of merged) {
@@ -529,7 +551,10 @@ export async function findProgressFromTmdb(
 
   if (airedUnwatched.length === 0 && !nextFuture && !nextTba) {
     const fallback = toNext(details.next_episode_to_air ?? {});
-    if (fallback) {
+    if (
+      fallback &&
+      !watchedKeys.has(`${fallback.season_number}x${fallback.episode_number}`)
+    ) {
       if (
         episodeIsAvailable(
           {

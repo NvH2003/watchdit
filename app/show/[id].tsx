@@ -602,14 +602,45 @@ export default function ShowDetailScreen() {
     if ((current?.season ?? 1) === (nextFloor?.season ?? 1) && userShow) {
       if ((current?.episode ?? 1) === 1 || nextFloor == null) return;
     }
-    const userShowId = userShow?.id ?? (await createShowOnList('watching'));
-    if (!userShowId) return;
+
     const watched = new Set(
       watchedEps.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
     );
     const extra = extraShowMeta();
     extra.trackFromSeason = nextFloor?.season ?? null;
     extra.trackFromEpisode = nextFloor?.episode ?? null;
+
+    if (nextFloor) {
+      const earlierChecked = watchedEps.filter(e =>
+        isBeforeTrackFrom(
+          Number(e.seasonNumber),
+          Number(e.episodeNumber),
+          nextFloor
+        )
+      );
+      if (earlierChecked.length > 0) {
+        const uncheck = await askConfirm(
+          'Uncheck earlier episodes?',
+          `You already checked ${earlierChecked.length} episode${
+            earlierChecked.length === 1 ? '' : 's'
+          } before this start point. Uncheck those so they no longer count as watched?`,
+          'Uncheck them',
+          'Keep checked'
+        );
+        if (uncheck === 'cancel') return;
+        if (uncheck) {
+          await db.transact(
+            earlierChecked.map(e => db.tx.watchedEpisodes[e.id].delete())
+          );
+          for (const e of earlierChecked) {
+            watched.delete(`${e.seasonNumber}x${e.episodeNumber}`);
+          }
+        }
+      }
+    }
+
+    const userShowId = userShow?.id ?? (await createShowOnList('watching'));
+    if (!userShowId) return;
     try {
       setStatusBusy(true);
       await applyProgress(userShowId, watched, extra, nextFloor);

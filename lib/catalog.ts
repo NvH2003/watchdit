@@ -26,32 +26,47 @@ export function tvmazeToTmdbEpisode(ep: TvmazeEpisode): TmdbEpisode {
   };
 }
 
+export function normalizeEpisodeTitle(name?: string | null): string {
+  return (name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/** True when TMDB already lists this slot or the same title in that season. */
+export function tmdbAlreadyHasEpisode(
+  tmdbEps: { season_number: number; episode_number: number; name?: string | null }[],
+  maze: TvmazeEpisode
+): boolean {
+  if (maze.season < 1 || maze.number == null || maze.number < 1) return true;
+  if (
+    tmdbEps.some(
+      e => e.season_number === maze.season && e.episode_number === maze.number
+    )
+  ) {
+    return true;
+  }
+  const title = normalizeEpisodeTitle(maze.name);
+  if (!title) return false;
+  return tmdbEps.some(
+    e => e.season_number === maze.season && normalizeEpisodeTitle(e.name) === title
+  );
+}
+
 export function mergeTmdbEpisodes(
   tmdbEps: TmdbEpisode[],
   mazeEps: TvmazeEpisode[]
 ): TmdbEpisode[] {
   const byKey = new Map<string, TmdbEpisode>();
+  const fromTmdb: TmdbEpisode[] = [];
   for (const ep of tmdbEps) {
     if (ep.season_number < 1 || ep.episode_number < 1) continue;
     byKey.set(`${ep.season_number}x${ep.episode_number}`, ep);
+    fromTmdb.push(ep);
   }
   for (const maze of mazeEps) {
-    if (maze.season < 1 || maze.number == null || maze.number < 1) continue;
-    const key = `${maze.season}x${maze.number}`;
+    if (tmdbAlreadyHasEpisode(fromTmdb, maze)) continue;
     const incoming = tvmazeToTmdbEpisode(maze);
-    const prev = byKey.get(key);
-    if (!prev) {
-      byKey.set(key, incoming);
-      continue;
-    }
-    byKey.set(key, {
-      ...prev,
-      name: prev.name?.trim() ? prev.name : incoming.name,
-      overview: prev.overview?.trim() ? prev.overview : incoming.overview,
-      air_date: prev.air_date?.trim() ? prev.air_date : incoming.air_date,
-      still_path: prev.still_path || incoming.still_path,
-      runtime: prev.runtime && prev.runtime > 0 ? prev.runtime : incoming.runtime,
-    });
+    const key = `${incoming.season_number}x${incoming.episode_number}`;
+    if (byKey.has(key)) continue;
+    byKey.set(key, incoming);
   }
   return [...byKey.values()].sort((a, b) =>
     a.season_number !== b.season_number
@@ -86,13 +101,7 @@ export function mergeSeasonMeta(
         name: `Season ${season}`,
         air_date: mazeAir.get(season) ?? null,
       });
-      continue;
     }
-    bySeason.set(season, {
-      ...prev,
-      episode_count: Math.max(prev.episode_count ?? 0, count),
-      air_date: prev.air_date || mazeAir.get(season) || null,
-    });
   }
   return [...bySeason.values()].sort((a, b) => a.season_number - b.season_number);
 }

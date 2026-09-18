@@ -1,6 +1,6 @@
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
-import { loadCatalogExtras, tvmazeToTmdbEpisode } from './catalog';
+import { loadCatalogExtras, tvmazeToTmdbEpisode, tmdbAlreadyHasEpisode } from './catalog';
 
 export function parseAirDay(iso?: string | null): Date | null {
   if (!iso) return null;
@@ -441,6 +441,8 @@ export async function findProgressFromTmdb(
     });
   }
 
+  const tmdbListed: { season_number: number; episode_number: number; name?: string }[] = [];
+
   for (let s = from; s <= totalSeasons; s++) {
     let season;
     try {
@@ -449,7 +451,14 @@ export async function findProgressFromTmdb(
       continue;
     }
     const eps = (season.episodes ?? []).filter(e => e.season_number > 0);
-    for (const e of eps) ingest(toNext(e));
+    for (const e of eps) {
+      tmdbListed.push({
+        season_number: e.season_number,
+        episode_number: e.episode_number,
+        name: e.name,
+      });
+      ingest(toNext(e));
+    }
     if (eps.length === 0) {
       emptySeasonStubs.push({
         season: s,
@@ -468,6 +477,7 @@ export async function findProgressFromTmdb(
     });
     for (const maze of extras.mazeEpisodes) {
       if (maze.season < from) continue;
+      if (tmdbAlreadyHasEpisode(tmdbListed, maze)) continue;
       ingest(toNext(tvmazeToTmdbEpisode(maze)));
     }
   } catch (e) {

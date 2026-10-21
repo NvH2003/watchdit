@@ -2,6 +2,7 @@ import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
 import {
   loadCatalogExtras,
+  alignMazeToShow,
   tvmazeToTmdbEpisode,
   tmdbAlreadyHasEpisode,
   dedupeEpisodesByTitle,
@@ -255,6 +256,22 @@ export function trackFromOf(show: {
   };
 }
 
+function broadcastDay(iso?: string | null): string | null {
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec((iso ?? '').trim());
+  return match ? match[1] : null;
+}
+
+function byBroadcastOrder<T extends { season_number: number; episode_number: number; air_date?: string | null }>(
+  a: T,
+  b: T
+): number {
+  const aDay = broadcastDay(a.air_date);
+  const bDay = broadcastDay(b.air_date);
+  if (aDay && bDay && aDay !== bDay) return aDay < bDay ? -1 : 1;
+  if (a.season_number !== b.season_number) return a.season_number - b.season_number;
+  return a.episode_number - b.episode_number;
+}
+
 export function isBeforeTrackFrom(
   season: number,
   ep: number,
@@ -448,12 +465,16 @@ export async function findProgressFromTmdb(
   const details = await tmdb.getShow(tmdbShowId);
   const originalLanguage = details.original_language || '';
   const seasonMeta = details.seasons ?? [];
+  const declaredSeasons = details.number_of_seasons ?? 0;
   const metaMax = seasonMeta.reduce((max, m) => {
     const n = m.season_number;
     return n > 0 && n > max ? n : max;
   }, 0);
-  const totalSeasons = Math.max(details.number_of_seasons ?? 0, metaMax);
+  const totalSeasons = Math.max(declaredSeasons, metaMax);
   const from = Math.max(1, trackFrom?.season ?? startSeason);
+  const trackPremiere = broadcastDay(
+    seasonMeta.find(season => season.season_number === (trackFrom?.season ?? from))?.air_date
+  );
   const totalEpisodes = details.number_of_episodes;
 
   type NextEp = {
@@ -480,6 +501,8 @@ export async function findProgressFromTmdb(
     if (!Number.isFinite(season_number) || season_number < 1) return null;
     if (!Number.isFinite(episode_number) || episode_number < 1) return null;
     if (isBeforeTrackFrom(season_number, episode_number, trackFrom)) return null;
+    const aired = broadcastDay(e.air_date);
+    if (trackFrom && trackPremiere && aired && aired < trackPremiere) return null;
     return {
       season_number,
       episode_number,
@@ -558,7 +581,12 @@ export async function findProgressFromTmdb(
       name: details.name,
       original_name: details.original_name,
     });
-    for (const maze of extras.mazeEpisodes) {
+    const aligned = alignMazeToShow(
+      seasonMeta.filter(season => season.season_number > 0),
+      extras.mazeEpisodes,
+      extras.siblingSeasons ?? []
+    );
+    for (const maze of aligned.episodes) {
       if (maze.season < from) continue;
       if (tmdbAlreadyHasEpisode(tmdbListed, maze)) continue;
       const mapped = tvmazeToTmdbEpisode(maze);
@@ -588,11 +616,7 @@ export async function findProgressFromTmdb(
   }
 
   const merged = dedupeEpisodesByTitle(
-    [...byKey.values()].sort((a, b) =>
-      a.season_number !== b.season_number
-        ? a.season_number - b.season_number
-        : a.episode_number - b.episode_number
-    ),
+    [...byKey.values()].sort(byBroadcastOrder),
     watchedKeys
   );
 

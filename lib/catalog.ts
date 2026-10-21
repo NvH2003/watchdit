@@ -326,44 +326,320 @@ export function mergeTmdbEpisodes(
   );
 }
 
-export function mergeSeasonMeta(
+/** Premiere dates within this many days are the same season, even if the season index differs. */
+const PREMIERE_MATCH_DAYS = 45;
+/** A new season has to fall on this show's own calendar, not a nearby special. */
+const MAX_CONTINUATION_MONTH_DISTANCE = 2;
+
+export type SeasonAir = {
+  seasonNumber: number;
+  airDate?: string | null;
+};
+
+function isoDay(iso?: string | null): string | null {
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec((iso ?? '').trim());
+  return match ? match[1] : null;
+}
+
+function dayNumber(iso: string): number | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!match) return null;
+  return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86_400_000;
+}
+
+function daysBetween(a: string, b: string): number | null {
+  const left = dayNumber(a);
+  const right = dayNumber(b);
+  if (left == null || right == null) return null;
+  return Math.abs(left - right);
+}
+
+function monthOf(iso: string): number | null {
+  const month = Number(iso.slice(5, 7));
+  return month >= 1 && month <= 12 ? month : null;
+}
+
+function yearOf(iso: string): number | null {
+  const year = Number(iso.slice(0, 4));
+  return Number.isFinite(year) ? year : null;
+}
+
+function monthDistance(a: number, b: number): number {
+  const diff = Math.abs(a - b);
+  return Math.min(diff, 12 - diff);
+}
+
+/** "Wie is de Mol? NPO Start-editie" and the main series share this stem. */
+export function titleStem(name: string): string {
+  return (name.split(/[?:]/)[0] ?? name).replace(/\s+/g, ' ').trim();
+}
+
+export function namesShareStem(a: string, b: string): boolean {
+  const left = a.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  const right = b.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  if (left.length < 4 || right.length < 4) return false;
+  return left === right || left.startsWith(right) || right.startsWith(left);
+}
+
+type MazeSeasonGroup = {
+  season: number;
+  episodes: TvmazeEpisode[];
+  premiere: string | null;
+};
+
+function groupMazeSeasons(episodes: TvmazeEpisode[]): MazeSeasonGroup[] {
+  const bySeason = new Map<number, TvmazeEpisode[]>();
+  for (const ep of episodes) {
+    if (ep.season < 1 || ep.number == null || ep.number < 1) continue;
+    const list = bySeason.get(ep.season) ?? [];
+    list.push(ep);
+    bySeason.set(ep.season, list);
+  }
+  return [...bySeason.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([season, group]) => {
+      const premieres = group
+        .map(ep => isoDay(ep.airdate))
+        .filter((day): day is string => !!day)
+        .sort();
+      return { season, episodes: group, premiere: premieres[0] ?? null };
+    });
+}
+
+function closestSeason(premiere: string, seasons: SeasonAir[]): SeasonAir | null {
+  let best: SeasonAir | null = null;
+  let bestDays = PREMIERE_MATCH_DAYS + 1;
+  for (const season of seasons) {
+    const air = isoDay(season.airDate);
+    if (!air) continue;
+    const days = daysBetween(premiere, air);
+    if (days == null || days > PREMIERE_MATCH_DAYS || days >= bestDays) continue;
+    best = season;
+    bestDays = days;
+  }
+  return best;
+}
+
+function withSeason(ep: TvmazeEpisode, season: number): TvmazeEpisode {
+  return ep.season === season ? ep : { ...ep, season };
+}
+
+function premiereMonths(seasons: SeasonAir[]): number[] {
+  const months: number[] = [];
+  for (const season of seasons) {
+    const air = isoDay(season.airDate);
+    const month = air ? monthOf(air) : null;
+    if (month != null) months.push(month);
+  }
+  return months;
+}
+
+function nearestMonthDistance(month: number, months: number[]): number | null {
+  if (!months.length) return null;
+  return Math.min(...months.map(known => monthDistance(month, known)));
+}
+
+function latestPremiere(seasons: SeasonAir[]): string | null {
+  let latest: string | null = null;
+  for (const season of seasons) {
+    const air = isoDay(season.airDate);
+    if (!air) continue;
+    if (!latest || air > latest) latest = air;
+  }
+  return latest;
+}
+
+function hasSeasonInYear(seasons: SeasonAir[], year: number): boolean {
+  return seasons.some(season => {
+    const air = isoDay(season.airDate);
+    return air != null && yearOf(air) === year;
+  });
+}
+
+function earliestPremiere(seasons: SeasonAir[]): string | null {
+  let earliest: string | null = null;
+  for (const season of seasons) {
+    const air = isoDay(season.airDate);
+    if (!air) continue;
+    if (!earliest || air < earliest) earliest = air;
+  }
+  return earliest;
+}
+
+function isPrimaryShow(showSeasons: SeasonAir[], siblingSeasons: SeasonAir[][]): boolean {
+  const count = showSeasons.length;
+  return siblingSeasons.every(sibling => sibling.length < count);
+}
+
+/** Off-calendar run of the main show, such as Renaissance, not a sister edition. */
+function isJubileeInsert(
+  premiere: string,
+  showSeasons: SeasonAir[],
+  siblingSeasons: SeasonAir[][]
+): boolean {
+  if (!isPrimaryShow(showSeasons, siblingSeasons)) return false;
+  if (siblingSeasons.some(sibling => continuesShow(premiere, sibling))) return false;
+  const earliest = earliestPremiere(showSeasons);
+  const latest = latestPremiere(showSeasons);
+  if (!earliest || !latest) return false;
+  const year = yearOf(premiere);
+  if (year != null && hasSeasonInYear(showSeasons, year)) return true;
+  return premiere >= earliest && premiere <= latest;
+}
+
+export function isAnniversarySeasonName(name?: string | null): boolean {
+  return /^(jubileumseizoen|anniversary season)\b/i.test((name ?? '').trim());
+}
+
+/** A later run on this show's own premiere month, not a special tucked into a year it already aired. */
+function continuesShow(premiere: string, seasons: SeasonAir[]): boolean {
+  const latest = latestPremiere(seasons);
+  if (!latest || premiere <= latest) return false;
+  const year = yearOf(premiere);
+  const month = monthOf(premiere);
+  if (year == null || month == null || hasSeasonInYear(seasons, year)) return false;
+  const distance = nearestMonthDistance(month, premiereMonths(seasons));
+  return distance != null && distance <= MAX_CONTINUATION_MONTH_DISTANCE;
+}
+
+function acceptsContinuation(
+  premiere: string,
+  seasons: SeasonAir[],
+  siblingSeasons: SeasonAir[][]
+): boolean {
+  if (!continuesShow(premiere, seasons)) return false;
+  const month = monthOf(premiere);
+  const year = yearOf(premiere);
+  if (month == null || year == null) return false;
+  const ownDistance = nearestMonthDistance(month, premiereMonths(seasons));
+  if (ownDistance == null) return false;
+  for (const sibling of siblingSeasons) {
+    // Another edition already aired that year: only an exact repeat of this show's month stays here.
+    if (hasSeasonInYear(sibling, year) && ownDistance > 0) return false;
+    if (!continuesShow(premiere, sibling)) continue;
+    const siblingDistance = nearestMonthDistance(month, premiereMonths(sibling));
+    if (siblingDistance != null && siblingDistance < ownDistance) return false;
+  }
+  return true;
+}
+
+/**
+ * Keep TVmaze episodes that belong to this TMDB show.
+ * Season indexes often diverge once a sister edition (streaming) or a special is inserted,
+ * so seasons are matched on premiere date. A season neither show has yet is appended
+ * when it continues this show's calendar. Jubilee runs stay on the main show under their own label.
+ */
+export function alignMazeToShow(
   tmdbMeta: TmdbSeasonSummary[],
-  mazeEps: TvmazeEpisode[]
-): TmdbSeasonSummary[] {
+  mazeEpisodes: TvmazeEpisode[],
+  siblingSeasons: SeasonAir[][] = []
+): { meta: TmdbSeasonSummary[]; episodes: TvmazeEpisode[] } {
+  const showSeasons: SeasonAir[] = tmdbMeta
+    .filter(season => season.season_number > 0)
+    .map(season => ({ seasonNumber: season.season_number, airDate: season.air_date }));
   const bySeason = new Map<number, TmdbSeasonSummary>();
-  for (const s of tmdbMeta) {
-    if (s.season_number < 1) continue;
-    bySeason.set(s.season_number, s);
+  for (const season of tmdbMeta) {
+    if (season.season_number < 1) continue;
+    bySeason.set(season.season_number, season);
   }
-  const mazeCounts = new Map<number, number>();
-  const mazeAir = new Map<number, string>();
-  for (const ep of mazeEps) {
-    if (ep.season < 1) continue;
-    mazeCounts.set(ep.season, (mazeCounts.get(ep.season) ?? 0) + 1);
-    if (ep.number === 1 && ep.airdate) mazeAir.set(ep.season, ep.airdate);
-  }
-  for (const [season, count] of mazeCounts) {
-    const prev = bySeason.get(season);
-    if (!prev) {
-      bySeason.set(season, {
-        id: MAZE_ID_OFFSET + season,
-        season_number: season,
-        episode_count: count,
-        name: `Season ${season}`,
-        air_date: mazeAir.get(season) ?? null,
-      });
+
+  const episodes: TvmazeEpisode[] = [];
+  const extras: MazeSeasonGroup[] = [];
+  const jubilees: MazeSeasonGroup[] = [];
+  for (const group of groupMazeSeasons(mazeEpisodes)) {
+    if (!group.premiere) continue;
+    const own = closestSeason(group.premiere, showSeasons);
+    if (own) {
+      for (const ep of group.episodes) episodes.push(withSeason(ep, own.seasonNumber));
+      continue;
     }
+    if (siblingSeasons.some(seasons => closestSeason(group.premiere as string, seasons))) continue;
+    if (acceptsContinuation(group.premiere, showSeasons, siblingSeasons)) {
+      extras.push(group);
+      continue;
+    }
+    if (isJubileeInsert(group.premiere, showSeasons, siblingSeasons)) jubilees.push(group);
   }
-  return [...bySeason.values()].sort((a, b) => a.season_number - b.season_number);
+
+  const byPremiere = (a: MazeSeasonGroup, b: MazeSeasonGroup) =>
+    (a.premiere ?? '') < (b.premiere ?? '') ? -1 : 1;
+  extras.sort(byPremiere);
+  jubilees.sort(byPremiere);
+  let nextNumber = showSeasons.reduce((max, season) => Math.max(max, season.seasonNumber), 0);
+  const usesDutch = tmdbMeta.some(season => /seizoen/i.test(season.name));
+  function appendGroup(group: MazeSeasonGroup, name: string) {
+    nextNumber += 1;
+    bySeason.set(nextNumber, {
+      id: MAZE_ID_OFFSET + group.season,
+      season_number: nextNumber,
+      episode_count: group.episodes.length,
+      name,
+      air_date: group.premiere,
+    });
+    for (const ep of group.episodes) episodes.push(withSeason(ep, nextNumber));
+  }
+  for (const group of extras) {
+    appendGroup(group, usesDutch ? `Seizoen ${nextNumber + 1}` : `Season ${nextNumber + 1}`);
+  }
+  for (const group of jubilees) {
+    const year = group.premiere?.slice(0, 4) ?? '';
+    appendGroup(group, usesDutch ? `Jubileumseizoen ${year}` : `Anniversary season ${year}`);
+  }
+
+  return {
+    meta: [...bySeason.values()].sort((a, b) => {
+      const aDay = isoDay(a.air_date);
+      const bDay = isoDay(b.air_date);
+      if (aDay && bDay && aDay !== bDay) return aDay < bDay ? -1 : 1;
+      return a.season_number - b.season_number;
+    }),
+    episodes,
+  };
+}
+
+function feedMatchesShow(episodes: TvmazeEpisode[], seasons: SeasonAir[]): boolean {
+  return groupMazeSeasons(episodes).some(
+    group => !!group.premiere && !!closestSeason(group.premiere, seasons)
+  );
 }
 
 export type CatalogExtras = {
   mazeShow: TvmazeShow | null;
   mazeEpisodes: TvmazeEpisode[];
   imdbId: string | null;
+  /** Premiere dates of sister editions, such as the streaming version of the same series. */
+  siblingSeasons: SeasonAir[][];
 };
 
 const extrasCache = new Map<number, Promise<CatalogExtras>>();
+
+async function loadSiblingSeasons(
+  tmdbShowId: number,
+  stem: string
+): Promise<SeasonAir[][]> {
+  if (stem.length < 4) return [];
+  const [en, nl] = await Promise.all([
+    tmdb.searchShows(stem).catch(() => null),
+    tmdb.searchShows(stem, 'nl-NL').catch(() => null),
+  ]);
+  const byId = new Map<number, { id: number; name?: string | null; original_name?: string | null }>();
+  for (const hit of [...(en?.results ?? []), ...(nl?.results ?? [])]) {
+    if (hit.id === tmdbShowId || byId.has(hit.id)) continue;
+    const name = hit.name || hit.original_name || '';
+    if (!namesShareStem(name, stem)) continue;
+    byId.set(hit.id, hit);
+  }
+  const shows = await Promise.all(
+    [...byId.values()].slice(0, 5).map(hit => tmdb.getShow(hit.id).catch(() => null))
+  );
+  return shows
+    .filter((show): show is NonNullable<typeof show> => !!show)
+    .map(show =>
+      (show.seasons ?? [])
+        .filter(season => season.season_number > 0)
+        .map(season => ({ seasonNumber: season.season_number, airDate: season.air_date ?? null }))
+    );
+}
 
 export async function loadCatalogExtras(
   tmdbShowId: number,
@@ -372,15 +648,34 @@ export async function loadCatalogExtras(
   let pending = extrasCache.get(tmdbShowId);
   if (!pending) {
     pending = (async () => {
+      const details = await tmdb.getShow(tmdbShowId).catch(() => null);
       const ids = await tmdb.getExternalIds(tmdbShowId).catch(() => null);
       const imdbId = ids?.imdb_id?.trim() || null;
-      const mazeShow = await lookupTvmazeShow({
+      const showName = details?.name || names?.name || '';
+      const originalName = details?.original_name || names?.original_name || '';
+      const ownSeasons: SeasonAir[] = (details?.seasons ?? [])
+        .filter(season => season.season_number > 0)
+        .map(season => ({ seasonNumber: season.season_number, airDate: season.air_date ?? null }));
+      const stem = titleStem(originalName || showName);
+      const siblingSeasons = await loadSiblingSeasons(tmdbShowId, stem).catch(() => []);
+      let mazeShow = await lookupTvmazeShow({
         imdbId,
         tvdbId: ids?.tvdb_id,
-        names: [names?.original_name, names?.name],
+        names: [originalName, showName],
       });
-      const mazeEpisodes = mazeShow ? await getTvmazeEpisodes(mazeShow.id) : [];
-      return { mazeShow, mazeEpisodes, imdbId };
+      let mazeEpisodes = mazeShow ? await getTvmazeEpisodes(mazeShow.id) : [];
+      // Sister editions often have no TVmaze record of their own. Their episodes sit on the main show.
+      if (stem && !feedMatchesShow(mazeEpisodes, ownSeasons)) {
+        const parent = await lookupTvmazeShow({ names: [stem] });
+        if (parent && parent.id !== mazeShow?.id) {
+          const parentEpisodes = await getTvmazeEpisodes(parent.id);
+          if (feedMatchesShow(parentEpisodes, ownSeasons)) {
+            mazeShow = parent;
+            mazeEpisodes = parentEpisodes;
+          }
+        }
+      }
+      return { mazeShow, mazeEpisodes, imdbId, siblingSeasons };
     })();
     extrasCache.set(tmdbShowId, pending);
   }

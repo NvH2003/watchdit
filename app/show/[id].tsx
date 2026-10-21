@@ -18,7 +18,7 @@ import { tmdb, posterUrl, stillUrl, formatEuropeanDate, formatRuntime, TmdbShow,
 import db from '@/lib/db';
 import { progressUpdates, hasAired, episodeIsAvailable, findProgressFromTmdb, clampEarlyAccessDays, trackFromOf, deriveTrackFrom, TrackFrom, isBeforeTrackFrom } from '@/lib/progress';
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from '@/lib/stats';
-import { loadCatalogExtras, mergeSeasonMeta, mergeTmdbEpisodes, dedupeEpisodesByTitle, expandWatchedKeys, watchedHintsFromRows, watchedTitleFields, episodeTitleKey, episodeOverviewKey } from '@/lib/catalog';
+import { loadCatalogExtras, alignMazeToShow, isAnniversarySeasonName, mergeTmdbEpisodes, dedupeEpisodesByTitle, expandWatchedKeys, watchedHintsFromRows, watchedTitleFields, episodeTitleKey, episodeOverviewKey } from '@/lib/catalog';
 import { TvmazeEpisode } from '@/lib/tvmaze';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
@@ -161,9 +161,13 @@ export default function ShowDetailScreen() {
         const extras = await loadCatalogExtras(showId, {
           name: showData.name,
           original_name: showData.original_name,
-        }).catch(() => ({ mazeShow: null, mazeEpisodes: [] as TvmazeEpisode[], imdbId: null }));
+        }).catch(() => ({
+          mazeShow: null,
+          mazeEpisodes: [] as TvmazeEpisode[],
+          imdbId: null,
+          siblingSeasons: [],
+        }));
         if (!active) return;
-        mazeEpsRef.current = extras.mazeEpisodes;
         setImdbId(extras.imdbId);
         setMazeUrl(extras.mazeShow?.url ?? null);
         const tmdbMetas = (showData.seasons ?? [])
@@ -178,7 +182,13 @@ export default function ShowDetailScreen() {
                 episode_count: 0,
                 name: `Season ${i + 1}`,
               }));
-        setSeasonMeta(mergeSeasonMeta(fallbackMetas, extras.mazeEpisodes));
+        const aligned = alignMazeToShow(
+          fallbackMetas,
+          extras.mazeEpisodes,
+          extras.siblingSeasons ?? []
+        );
+        mazeEpsRef.current = aligned.episodes;
+        setSeasonMeta(aligned.meta);
         setEpisodesBySeason({});
         const providerData = await tmdb.getWatchProviders(showId).catch(() => null);
         if (!active) return;
@@ -929,6 +939,9 @@ export default function ShowDetailScreen() {
     );
   }
 
+  const regularSeasonCount = seasonMeta.filter(season => !isAnniversarySeasonName(season.name)).length;
+  const seasonCount = regularSeasonCount || seasonMeta.length;
+
   return (
     <>
       <Stack.Screen
@@ -963,10 +976,9 @@ export default function ShowDetailScreen() {
                   {show.first_air_date.slice(0, 4)}
                 </Text>
               ) : null}
-              {seasonMeta.length ? (
+              {seasonCount ? (
                 <Text style={styles.metaText}>
-                  {seasonMeta.length}{' '}
-                  {seasonMeta.length === 1 ? 'season' : 'seasons'}
+                  {seasonCount} {seasonCount === 1 ? 'season' : 'seasons'}
                 </Text>
               ) : show.number_of_seasons ? (
                 <Text style={styles.metaText}>

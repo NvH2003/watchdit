@@ -132,8 +132,8 @@ export function stillUrl(
 }
 
 export const tmdb = {
-  searchShows: (query: string) =>
-    get<{ results: TmdbShow[] }>('/search/tv', { query }),
+  searchShows: (query: string, language?: string) =>
+    get<{ results: TmdbShow[] }>('/search/tv', language ? { query, language } : { query }),
 
   getShow: (id: number) =>
     get<TmdbShow>(`/tv/${id}`),

@@ -13,17 +13,21 @@ import { theme } from '@/constants/theme';
 
 const RED = theme.accent;
 const GREEN = theme.check;
+const PURPLE = theme.finished;
 
-/** Red = still to mark. Animation turns it green when watched. */
+/** Red = still to mark. Animation turns it green when watched, purple when the series is finished. */
 export default function EpisodeCheck({
   watched,
+  finished = false,
   size = 26,
 }: {
   watched: boolean;
+  finished?: boolean;
   size?: number;
 }) {
   const scale = useSharedValue(1);
   const progress = useSharedValue(watched ? 1 : 0);
+  const done = useSharedValue(finished ? 1 : 0);
   const mounted = useRef(false);
 
   useEffect(() => {
@@ -45,9 +49,23 @@ export default function EpisodeCheck({
     }
   }, [watched, progress, scale]);
 
+  useEffect(() => {
+    done.value = withTiming(finished ? 1 : 0, { duration: 360 });
+    if (finished) {
+      scale.value = withSequence(
+        withSpring(1.35, { damping: 8, stiffness: 380, mass: 0.4 }),
+        withSpring(1, { damping: 12, stiffness: 260 })
+      );
+    }
+  }, [finished, done, scale]);
+
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
-    backgroundColor: interpolateColor(progress.value, [0, 1], [RED, GREEN]),
+    backgroundColor: interpolateColor(
+      done.value,
+      [0, 1],
+      [interpolateColor(progress.value, [0, 1], [RED, GREEN]), PURPLE]
+    ),
   }));
 
   return (

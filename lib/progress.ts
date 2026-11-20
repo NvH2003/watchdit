@@ -2,7 +2,9 @@ import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
 import {
   loadCatalogExtras,
+  loadNetflixCatalog,
   alignMazeToShow,
+  alignWatchedToCatalog,
   tvmazeToTmdbEpisode,
   tmdbAlreadyHasEpisode,
   dedupeEpisodesByTitle,
@@ -121,24 +123,32 @@ export function readyForWatchlist(
     nextEpisodeNum?: number | null;
     watchedKeys?: Set<string>;
     daysEarly?: number;
+    /** When the row was last touched. A fresh Watching check stays listed while the next episode is still loading. */
+    lastTouchedAt?: string | number | null;
   }
 ): boolean {
-  if (status !== 'watching' && status !== 'upToDate') return false;
+  if (status !== 'watching' && status !== 'upToDate' && status !== 'notStarted' && status !== 'stale') {
+    return false;
+  }
   const season = opts?.nextSeasonNum;
   const ep = opts?.nextEpisodeNum;
+  if (status === 'notStarted' || status === 'stale') return true;
   if (
     opts?.watchedKeys &&
     hasNextPointer(season, ep) &&
     opts.watchedKeys.has(`${season}x${ep}`)
   ) {
-    return false;
+    const touched =
+      opts.lastTouchedAt != null ? new Date(opts.lastTouchedAt).getTime() : Number.NaN;
+    const justChecked =
+      status === 'watching' &&
+      Number.isFinite(touched) &&
+      Date.now() - touched < 3 * 60 * 1000;
+    if (!justChecked) return false;
   }
   if (hasAired(nextEpisodeAirDate, opts?.daysEarly)) return true;
-  return (
-    status === 'watching' &&
-    hasNextPointer(season, ep) &&
-    !isFutureAirDate(nextEpisodeAirDate, opts?.daysEarly)
-  );
+  // Watching stays on To watch even when the next episode has not aired yet.
+  return status === 'watching' && hasNextPointer(season, ep);
 }
 
 function hasNextPointer(
@@ -176,7 +186,10 @@ export function readyForUpcoming(
   ) {
     return false;
   }
-  return isFutureAirDate(nextEpisodeAirDate, opts?.daysEarly);
+  if (!isFutureAirDate(nextEpisodeAirDate, opts?.daysEarly)) return false;
+  // An explicit Watching choice is listed under Continue watching instead.
+  if (status === 'watching' && hasNextPointer(season, ep)) return false;
+  return true;
 }
 
 /** TMDB TV status: Ended / Canceled vs still running. */
@@ -282,6 +295,16 @@ export function isBeforeTrackFrom(
     season < trackFrom.season ||
     (season === trackFrom.season && ep < trackFrom.episode)
   );
+}
+
+/** Pull a skip-ahead floor back so an unchecked episode counts again. */
+export function trackFromCovering(
+  floor: TrackFrom | null,
+  season: number,
+  episode: number
+): TrackFrom | null {
+  if (!floor || !isBeforeTrackFrom(season, episode, floor)) return floor;
+  return { season, episode };
 }
 
 /** Contiguous watched-season run ending at the latest check (or lastSeasonHint). */
@@ -475,7 +498,11 @@ export async function findProgressFromTmdb(
   const trackPremiere = broadcastDay(
     seasonMeta.find(season => season.season_number === (trackFrom?.season ?? from))?.air_date
   );
-  const totalEpisodes = details.number_of_episodes;
+  let totalEpisodes = details.number_of_episodes;
+  const netflix = await loadNetflixCatalog(tmdbShowId).catch(() => null);
+  const netflixEpisodes = netflix?.episodes ?? [];
+  const useNetflix = netflixEpisodes.length > 0;
+  if (useNetflix) totalEpisodes = netflixEpisodes.length;
 
   type NextEp = {
     season_number: number;
@@ -542,7 +569,20 @@ export async function findProgressFromTmdb(
   const tmdbListed: { season_number: number; episode_number: number; name?: string }[] = [];
   const catalog: DedupeEpisode[] = [];
 
-  for (let s = from; s <= totalSeasons; s++) {
+  if (useNetflix) {
+    for (const ep of netflixEpisodes) {
+      if (ep.season_number < from) continue;
+      catalog.push({
+        season_number: ep.season_number,
+        episode_number: ep.episode_number,
+        name: ep.name,
+        overview: ep.overview,
+      });
+      ingest(toNext(ep));
+    }
+  }
+
+  for (let s = useNetflix ? totalSeasons + 1 : from; s <= totalSeasons; s++) {
     let season;
     try {
       season = await tmdb.getSeason(tmdbShowId, s);
@@ -576,26 +616,28 @@ export async function findProgressFromTmdb(
     }
   }
 
-  try {
-    const extras = await loadCatalogExtras(tmdbShowId, {
-      name: details.name,
-      original_name: details.original_name,
-    });
-    const aligned = alignMazeToShow(
-      seasonMeta.filter(season => season.season_number > 0),
-      extras.mazeEpisodes,
-      extras.siblingSeasons ?? []
-    );
-    for (const maze of aligned.episodes) {
-      if (maze.season < from) continue;
-      if (tmdbAlreadyHasEpisode(tmdbListed, maze)) continue;
-      const mapped = tvmazeToTmdbEpisode(maze);
-      if (isUnpublishedPlaceholder(mapped)) continue;
-      catalog.push(mapped);
-      ingest(toNext(mapped));
+  if (!useNetflix) {
+    try {
+      const extras = await loadCatalogExtras(tmdbShowId, {
+        name: details.name,
+        original_name: details.original_name,
+      });
+      const aligned = alignMazeToShow(
+        seasonMeta.filter(season => season.season_number > 0),
+        extras.mazeEpisodes,
+        extras.siblingSeasons ?? []
+      );
+      for (const maze of aligned.episodes) {
+        if (maze.season < from) continue;
+        if (tmdbAlreadyHasEpisode(tmdbListed, maze)) continue;
+        const mapped = tvmazeToTmdbEpisode(maze);
+        if (isUnpublishedPlaceholder(mapped)) continue;
+        catalog.push(mapped);
+        ingest(toNext(mapped));
+      }
+    } catch (e) {
+      console.warn('TVmaze catalog merge failed', e);
     }
-  } catch (e) {
-    console.warn('TVmaze catalog merge failed', e);
   }
 
   for (const stub of emptySeasonStubs) {
@@ -610,7 +652,10 @@ export async function findProgressFromTmdb(
     });
   }
 
-  const watchedKeys = expandWatchedKeys(watched, catalog, watchedHints);
+  const orderWatched = useNetflix
+    ? alignWatchedToCatalog(watched, watchedHints, catalog)
+    : watched;
+  const watchedKeys = expandWatchedKeys(orderWatched, catalog, watchedHints);
   for (const key of [...byKey.keys()]) {
     if (watchedKeys.has(key)) byKey.delete(key);
   }
@@ -675,7 +720,7 @@ export async function findProgressFromTmdb(
     listed?: number | null
   ): Promise<number | undefined> {
     let mins = episodeRuntimeMinutes(listed);
-    if (mins == null) {
+    if (mins == null && !useNetflix) {
       try {
         const detail = await tmdb.getEpisode(tmdbShowId, season, ep);
         mins = episodeRuntimeMinutes(detail.runtime);
@@ -719,9 +764,10 @@ export async function findProgressFromTmdb(
     const remainingInSeason = merged.filter(
       e => e.season_number === upcoming.season_number
     ).length;
-    const seasonEpisodeCount =
-      seasonMeta.find(m => m.season_number === upcoming.season_number)?.episode_count ??
-      catalog.filter(e => e.season_number === upcoming.season_number).length;
+    const seasonEpisodeCount = useNetflix
+      ? catalog.filter(e => e.season_number === upcoming.season_number).length
+      : (seasonMeta.find(m => m.season_number === upcoming.season_number)?.episode_count ??
+        catalog.filter(e => e.season_number === upcoming.season_number).length);
     return {
       status: 'upToDate',
       nextSeasonNum: upcoming.season_number,

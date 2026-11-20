@@ -9,8 +9,9 @@ import {
 } from 'react-native';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
 import { posterUrl } from '@/lib/tmdb';
+import type { ShowStatus } from '@/lib/watchlist';
 
-export type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
+export type { ShowStatus };
 
 interface ShowRowProps {
   id: string;

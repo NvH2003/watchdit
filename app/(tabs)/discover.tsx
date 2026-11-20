@@ -173,7 +173,7 @@ export default function DiscoverScreen() {
       tmdbShowId: show.id,
       tmdbShowName: show.name,
       tmdbPosterPath: show.poster_path ?? '',
-      status: hasAired(provisionalAir) ? 'watching' : 'upToDate',
+      status: hasAired(provisionalAir) ? 'notStarted' : 'upToDate',
       addedAt: now,
       lastTouchedAt: now,
       nextSeasonNum: 1,
@@ -197,9 +197,13 @@ export default function DiscoverScreen() {
       const lang = details.original_language || undefined;
       const progress = await findProgressFromTmdb(show.id, new Set(), 1);
       const episodeRuntime = averageEpisodeRuntime(details.episode_run_time);
+      const updates = progressUpdates(progress);
+      if (hasAired(provisionalAir) && updates.status === 'watching') {
+        updates.status = 'notStarted';
+      }
       await db.transact([
         db.tx.userShows[entityId].update({
-          ...progressUpdates(progress),
+          ...updates,
           tmdbShowName: details.name || show.name,
           tmdbPosterPath: details.poster_path ?? show.poster_path ?? '',
           tmdbOriginalLanguage: lang ?? '',

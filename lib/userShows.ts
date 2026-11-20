@@ -13,7 +13,7 @@ import {
 import { WatchedHint } from './catalog';
 import { averageEpisodeRuntime, episodeRuntimeMinutes } from './stats';
 import { tmdb } from './tmdb';
-import { staleCutoff } from './watchlist';
+import { inferredWatchlistBucket, lastWatchedAt, staleCutoff, watchedCount } from './watchlist';
 
 /** Touch timestamp that places a show in "Haven't watched in a while". */
 export function staleWatchlistTouchIso(now = new Date()): string {
@@ -22,13 +22,16 @@ export function staleWatchlistTouchIso(now = new Date()): string {
 
 /**
  * Move a show onto Watching and refresh next-episode fields so it can appear
- * on To watch immediately. From Watch Later, lands in "Haven't watched in a while".
+ * on To watch immediately. From Watch Later, lands in "Haven't watched in a while"
+ * unless `continueWatching` is set, which pins it under Continue watching.
  */
 export async function activateShowWatching(opts: {
   userShowId: string;
   tmdbShowId: number;
   watchedKeys: Set<string>;
   fromWatchLater?: boolean;
+  /** Status button: keep Watching and show it under Continue watching now. */
+  continueWatching?: boolean;
   startSeason?: number;
   originalLanguage?: string;
   daysEarly?: number;
@@ -37,6 +40,15 @@ export async function activateShowWatching(opts: {
   clearTrackFrom?: boolean;
   watchedHints?: WatchedHint[];
 }): Promise<void> {
+  if (opts.continueWatching) {
+    await db.transact([
+      db.tx.userShows[opts.userShowId].update({
+        status: 'watching',
+        keepWatching: true,
+        lastTouchedAt: new Date().toISOString(),
+      }),
+    ]);
+  }
   const progress = await findProgressFromTmdb(
     opts.tmdbShowId,
     opts.watchedKeys,
@@ -52,12 +64,19 @@ export async function activateShowWatching(opts: {
     updates.trackFromSeason = null;
     updates.trackFromEpisode = null;
   }
-  // Keep the user's Watching choice if TMDB would mark the show finished.
-  if (updates.status === 'finished') {
+  // Keep the user's Watching choice if the catalog would mark them caught up or finished.
+  if (opts.continueWatching) {
     updates.status = 'watching';
-  }
-  if (opts.fromWatchLater) {
-    updates.lastTouchedAt = staleWatchlistTouchIso();
+    updates.keepWatching = true;
+    updates.statusChosen = true;
+    updates.lastTouchedAt = new Date().toISOString();
+  } else if (opts.fromWatchLater) {
+    updates.status = opts.watchedKeys.size === 0 ? 'notStarted' : 'stale';
+    updates.keepWatching = false;
+    updates.statusChosen = true;
+    updates.lastTouchedAt = new Date().toISOString();
+  } else if (updates.status === 'finished') {
+    updates.status = 'watching';
   }
   if (opts.originalLanguage) {
     updates.tmdbOriginalLanguage = opts.originalLanguage;
@@ -198,6 +217,86 @@ export function useDedupeUserShows() {
 }
 
 /**
+ * Give existing Watching rows the Not started or Haven't watched status that
+ * the list used to infer, so those sections stay separate from Continue watching.
+ */
+export function useSeparateListStatuses() {
+  const { user } = db.useAuth();
+  const { data } = db.useQuery(
+    user
+      ? {
+          userShows: { $: { where: { '$user.id': user.id } } },
+          watchedEpisodes: { $: { where: { '$user.id': user.id } } },
+        }
+      : null
+  );
+  const busy = useRef(false);
+
+  useEffect(() => {
+    if (!user || !data?.userShows || busy.current) return;
+    const watched = data.watchedEpisodes ?? [];
+    const moves = data.userShows.flatMap(show => {
+      if (show.keepWatching === true || show.statusChosen === true) return [];
+      if (show.status !== 'watching' && show.status !== 'stale' && show.status !== 'notStarted') {
+        return [];
+      }
+      const tmdbId = Number(show.tmdbShowId);
+      if (!Number.isFinite(tmdbId)) return [];
+      const bucket = inferredWatchlistBucket(
+        show,
+        watchedCount(watched, tmdbId),
+        lastWatchedAt(watched, tmdbId)
+      );
+      const current = show.status === 'watching' ? 'watchNext' : show.status;
+      if (current === bucket) return [];
+      return [
+        db.tx.userShows[show.id].update({
+          status: bucket === 'watchNext' ? 'watching' : bucket,
+        }),
+      ];
+    });
+    if (moves.length === 0) return;
+    busy.current = true;
+    const run = async () => {
+      try {
+        const chunkSize = 40;
+        for (let i = 0; i < moves.length; i += chunkSize) {
+          await db.transact(moves.slice(i, i + chunkSize));
+        }
+      } catch (e) {
+        console.warn('Failed to separate list statuses', e);
+      } finally {
+        busy.current = false;
+      }
+    };
+    run();
+  }, [user, data?.userShows, data?.watchedEpisodes]);
+}
+
+/** Put a show back on Watching after a catalog refresh, when the user chose that status. */
+export function useKeepChosenWatching() {
+  const { user } = db.useAuth();
+  const { data } = db.useQuery(
+    user ? { userShows: { $: { where: { '$user.id': user.id } } } } : null
+  );
+  const busy = useRef(false);
+
+  useEffect(() => {
+    if (!user || !data?.userShows || busy.current) return;
+    const ids = data.userShows
+      .filter(show => show.keepWatching === true && show.status === 'upToDate')
+      .map(show => show.id);
+    if (ids.length === 0) return;
+    busy.current = true;
+    db.transact(ids.map(id => db.tx.userShows[id].update({ status: 'watching' })))
+      .catch(e => console.warn('Failed to keep chosen watching status', e))
+      .finally(() => {
+        busy.current = false;
+      });
+  }, [user, data?.userShows]);
+}
+
+/**
  * When an up-to-date show's next *unwatched* episode airs, flip to watching.
  * Also repairs stale nextEpisode* rows that still point at an already-checked episode
  * (those used to wrongly flood To watch after the air-date promote change).
@@ -263,7 +362,14 @@ export function usePromoteAiredUpToDate() {
     const txs: ReturnType<typeof db.tx.userShows[string]['update']>[] = [];
 
     for (const s of data.userShows) {
-      if (s.status === 'watchLater' || s.status === 'finished') continue;
+      if (
+        s.status === 'watchLater' ||
+        s.status === 'finished' ||
+        s.status === 'notStarted' ||
+        s.status === 'stale'
+      ) {
+        continue;
+      }
       const tmdbId = Number(s.tmdbShowId);
       const season = s.nextSeasonNum as number | undefined;
       const ep = s.nextEpisodeNum as number | undefined;
@@ -396,7 +502,9 @@ export function useBackfillEpisodeRuntimes() {
 
         const missingNext = shows
           .filter(s => {
-            if (s.status !== 'watching' && s.status !== 'upToDate') return false;
+            if (s.status !== 'watching' && s.status !== 'upToDate' && s.status !== 'notStarted' && s.status !== 'stale') {
+              return false;
+            }
             const season = Number(s.nextSeasonNum);
             const ep = Number(s.nextEpisodeNum);
             if (!Number.isFinite(season) || season < 1) return false;

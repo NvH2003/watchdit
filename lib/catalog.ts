@@ -1,5 +1,6 @@
-import { tmdb, TmdbEpisode, TmdbSeasonSummary } from './tmdb';
+import { tmdb, TmdbEpisode, TmdbSeasonSummary, TmdbWatchProvidersResponse } from './tmdb';
 import { getTvmazeEpisodes, lookupTvmazeShow, TvmazeEpisode, TvmazeShow } from './tvmaze';
+import { loadTvdbNetflixOrder, NetflixCatalog, tvdbConfigured } from './tvdb';
 
 const MAZE_ID_OFFSET = 1_000_000_000;
 
@@ -224,6 +225,57 @@ export function expandWatchedKeys(
   }
 
   return keys;
+}
+
+/**
+ * Netflix episode numbers are a different cut from the broadcast list.
+ * Keep a stored check only when its title matches that cut, or when the
+ * stored row has no title and the season/episode slot is the only clue.
+ */
+export function alignWatchedToCatalog(
+  watched: Set<string>,
+  hints: WatchedHint[] | undefined,
+  catalog: DedupeEpisode[]
+): Set<string> {
+  const hintByKey = new Map<string, WatchedHint>();
+  for (const hint of hints ?? []) hintByKey.set(`${hint.season}x${hint.ep}`, hint);
+  const keys = new Set<string>();
+  for (const ep of catalog) {
+    const key = `${ep.season_number}x${ep.episode_number}`;
+    const storedTitle = (hintByKey.get(key)?.titleKey ?? '').trim();
+    const epTitle = normalizeEpisodeTitle(ep.name);
+    if (watched.has(key) && (!storedTitle || !epTitle || storedTitle === epTitle)) {
+      keys.add(key);
+      continue;
+    }
+    for (const hint of hints ?? []) {
+      const title = (hint.titleKey ?? '').trim();
+      if (hint.season === ep.season_number && title && title === epTitle) {
+        keys.add(key);
+        break;
+      }
+    }
+  }
+  return keys;
+}
+
+const NETFLIX_PROVIDER_ID = 8;
+
+export function watchProvidersIncludeNetflix(
+  providers?: TmdbWatchProvidersResponse | null
+): boolean {
+  for (const code of ['NL', 'BE']) {
+    const flatrate = providers?.results?.[code]?.flatrate ?? [];
+    if (
+      flatrate.some(
+        provider =>
+          provider.provider_id === NETFLIX_PROVIDER_ID || /^netflix$/i.test(provider.provider_name)
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function isMazeId(id?: number): boolean {
@@ -678,6 +730,26 @@ export async function loadCatalogExtras(
       return { mazeShow, mazeEpisodes, imdbId, siblingSeasons };
     })();
     extrasCache.set(tmdbShowId, pending);
+  }
+  return pending;
+}
+
+const netflixCache = new Map<number, Promise<NetflixCatalog | null>>();
+
+export async function loadNetflixCatalog(tmdbShowId: number): Promise<NetflixCatalog | null> {
+  if (!tvdbConfigured()) return null;
+  let pending = netflixCache.get(tmdbShowId);
+  if (!pending) {
+    pending = (async () => {
+      const [ids, providers] = await Promise.all([
+        tmdb.getExternalIds(tmdbShowId).catch(() => null),
+        tmdb.getWatchProviders(tmdbShowId).catch(() => null),
+      ]);
+      const tvdbId = ids?.tvdb_id;
+      if (!tvdbId || tvdbId <= 0 || !watchProvidersIncludeNetflix(providers)) return null;
+      return loadTvdbNetflixOrder(tvdbId);
+    })().catch(() => null);
+    netflixCache.set(tmdbShowId, pending);
   }
   return pending;
 }

@@ -1,4 +1,4 @@
-/** Warm charcoal — no purple or indigo. */
+/** Warm charcoal. Purple is reserved for a series the user has finished. */
 export const theme = {
   bg: '#121110',
   surface: '#1c1b19',
@@ -9,6 +9,7 @@ export const theme = {
   faint: '#6e6860',
   accent: '#e85d4c',
   check: '#3dce7a',
+  finished: '#9b6bff',
   gold: '#d4a056',
   sky: '#4aa3c7',
   danger: '#e85d4c',

@@ -18,8 +18,9 @@ import EpisodeCheck from '@/components/EpisodeCheck';
 import EpisodeDetailModal from '@/components/EpisodeDetailModal';
 import { fetchLongerEpisodeOverview } from '@/lib/episodeOverview';
 import { hasAired, isFutureAirDate, upcomingAirsCaption } from '@/lib/progress';
+import type { ShowStatus } from '@/lib/watchlist';
 
-export type ShowStatus = 'watching' | 'watchLater' | 'finished' | 'upToDate';
+export type { ShowStatus };
 
 interface ShowRowTVProps {
   id: string;
@@ -39,6 +40,10 @@ interface ShowRowTVProps {
   remainingCount?: number;
   upcomingDropKind?: string | null;
   canMark?: boolean;
+  /** The episode on screen was just checked and the next one is still loading. */
+  pendingCheck?: boolean;
+  /** That check was the last episode of an ended series. */
+  finished?: boolean;
   daysEarly?: number;
   onShowPress: () => void;
   onCheckPress: () => void;
@@ -122,6 +127,8 @@ export default function ShowRowTV({
   remainingCount,
   upcomingDropKind,
   canMark = true,
+  pendingCheck = false,
+  finished = false,
   daysEarly = 0,
   onShowPress,
   onCheckPress,
@@ -267,16 +274,22 @@ export default function ShowRowTV({
           <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => {
-              if (marking) return;
+              if (marking || pendingCheck) return;
               setMarking(true);
               onCheckPress();
             }}
             activeOpacity={0.75}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel={marking ? 'Marked as watched' : 'Mark episode as watched'}
+            accessibilityLabel={
+              finished
+                ? 'Series finished'
+                : marking || pendingCheck
+                  ? 'Marked as watched'
+                  : 'Mark episode as watched'
+            }
           >
-            <EpisodeCheck watched={marking} size={28} />
+            <EpisodeCheck watched={marking || pendingCheck || finished} finished={finished} size={28} />
           </TouchableOpacity>
         ) : (
           <View style={styles.iconBtn} accessibilityLabel="This episode isn't out yet">

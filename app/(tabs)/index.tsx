@@ -9,7 +9,8 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { id as instantId } from '@instantdb/react-native';
 import db from '@/lib/db';
-import ShowRowTV, { ShowStatus } from '@/components/ShowRowTV';
+import ShowRowTV from '@/components/ShowRowTV';
+import type { ShowStatus } from '@/lib/watchlist';
 import ShowGridCard from '@/components/ShowGridCard';
 import {
   hasAired,
@@ -25,6 +26,7 @@ import {
   shiftAirDate,
   trackFromOf,
   upcomingAirsCaption,
+  trackFromCovering,
 } from '@/lib/progress';
 import { episodeRuntimeMinutes } from '@/lib/stats';
 import { episodeTitleKey, episodeOverviewKey, watchedHintsFromRows, watchedTitleFields } from '@/lib/catalog';
@@ -36,6 +38,7 @@ import {
   watchedCount,
   sortTime,
   bucketForShow,
+  inferredWatchlistBucket,
   sortWatchNext,
   sortStale,
   sortNotStarted,
@@ -56,6 +59,8 @@ type UndoSnapshot = {
   showId: string;
   episodeId: string | null;
   showName: string;
+  /** The check was the last episode of a series that has ended. */
+  finished?: boolean;
   previous: {
     lastTouchedAt: string;
     nextSeasonNum: number;
@@ -63,11 +68,21 @@ type UndoSnapshot = {
     nextEpisodeName: string;
     nextEpisodeAirDate: string;
     nextEpisodeStillPath: string;
+    nextEpisodeRuntime: number | null;
+    unwatchedAiredCount: number | null;
+    remainingAiredCount: number | null;
+    upcomingDropKind: string | null;
     status: string;
+    keepWatching: boolean;
+    statusChosen: boolean;
+    trackFromSeason: number | null;
+    trackFromEpisode: number | null;
   };
 };
 
 const UNDO_MS = 8000;
+/** How long a finished series keeps its purple check on the list before it moves off. */
+const FINISHED_HOLD_MS = 2200;
 
 const SECTION_META: { key: WatchlistBucket; title: string }[] = [
   { key: 'watchNext', title: 'Continue watching' },
@@ -89,6 +104,9 @@ export default function EpisodesScreen() {
   const [activeTab, setActiveTab] = useState<TabKey>('watchlist');
   const [isGrid, setIsGrid] = useState(false);
   const [undo, setUndo] = useState<UndoSnapshot | null>(null);
+  const [heldCheck, setHeldCheck] = useState<{ id: string; key: string } | null>(null);
+  const heldCheckRef = useRef<{ id: string; key: string } | null>(null);
+  const [finishedId, setFinishedId] = useState<string | null>(null);
   const [bucketFilter, setBucketFilter] = useState<'all' | WatchlistBucket>('all');
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [dayKey, setDayKey] = useState(() => localDayKey());
@@ -108,6 +126,7 @@ export default function EpisodesScreen() {
   const queryReady = !user || (!isLoading && data != null);
   const checkingRef = useRef(false);
   const recategorizedRef = useRef(false);
+  const checkToken = useRef(0);
 
   function isOnWatchlist(s: (typeof allShows)[0]) {
     const tmdbId = s.tmdbShowId as number;
@@ -124,6 +143,7 @@ export default function EpisodesScreen() {
         nextEpisodeNum: s.nextEpisodeNum as number | undefined,
         watchedKeys,
         daysEarly: clampEarlyAccessDays(s.earlyAccessDays),
+        lastTouchedAt: s.lastTouchedAt as string | number | null | undefined,
       }
     );
   }
@@ -159,7 +179,14 @@ export default function EpisodesScreen() {
     useCallback(() => {
       if (!user || checkingRef.current) return;
       const toCheck = allShows.filter(s => {
-        if (s.status === 'watchLater' || s.status === 'finished') return false;
+        if (
+          s.status === 'watchLater' ||
+          s.status === 'finished' ||
+          s.status === 'notStarted' ||
+          s.status === 'stale'
+        ) {
+          return false;
+        }
         const air = s.nextEpisodeAirDate as string | undefined;
         const season = s.nextSeasonNum as number | undefined;
         const ep = s.nextEpisodeNum as number | undefined;
@@ -227,8 +254,35 @@ export default function EpisodesScreen() {
               watchedHintsFromRows(rows)
             );
             if (cancelled) return;
+            const updates = progressUpdates(progress);
+            if (
+              (updates.nextEpisodeNum == null || updates.nextSeasonNum == null) &&
+              show.nextEpisodeNum != null &&
+              !watched.has(`${show.nextSeasonNum}x${show.nextEpisodeNum}`)
+            ) {
+              updates.nextSeasonNum = show.nextSeasonNum;
+              updates.nextEpisodeNum = show.nextEpisodeNum;
+              updates.nextEpisodeName = show.nextEpisodeName ?? '';
+              updates.nextEpisodeAirDate = show.nextEpisodeAirDate ?? '';
+              updates.nextEpisodeStillPath = show.nextEpisodeStillPath ?? '';
+              updates.nextEpisodeRuntime = show.nextEpisodeRuntime ?? null;
+            }
+            if (show.keepWatching === true && updates.status === 'upToDate') {
+              updates.status = 'watching';
+            } else if (
+              show.status === 'watching' &&
+              show.keepWatching !== true &&
+              show.statusChosen !== true
+            ) {
+              const bucket = inferredWatchlistBucket(
+                show,
+                watched.size,
+                lastWatchedAt(rows, tmdbId)
+              );
+              if (bucket !== 'watchNext') updates.status = bucket;
+            }
             await db.transact([
-              db.tx.userShows[show.id].update(progressUpdates(progress)),
+              db.tx.userShows[show.id].update(updates),
             ]);
           }
           recategorizedRef.current = true;
@@ -360,7 +414,7 @@ export default function EpisodesScreen() {
         console.warn('Failed to activate watching', e);
       }
     }
-    await db.transact([db.tx.userShows[showId].update({ status })]);
+    await db.transact([db.tx.userShows[showId].update({ status, keepWatching: false })]);
   }
 
   async function handleRemove(showId: string) {
@@ -377,6 +431,7 @@ export default function EpisodesScreen() {
     const previousSortIso = new Date(
       sortTime(show, lastWatchedAt(watchedEps, tmdbId))
     ).toISOString();
+    const previousFloor = trackFromCovering(trackFromOf(show), curSeason, curEpisode);
     const previous = {
       lastTouchedAt: previousSortIso,
       nextSeasonNum: curSeason,
@@ -384,100 +439,147 @@ export default function EpisodesScreen() {
       nextEpisodeName: (show.nextEpisodeName as string | undefined) ?? '',
       nextEpisodeAirDate: (show.nextEpisodeAirDate as string | undefined) ?? '',
       nextEpisodeStillPath: (show.nextEpisodeStillPath as string | undefined) ?? '',
+      nextEpisodeRuntime: (show.nextEpisodeRuntime as number | undefined) ?? null,
+      unwatchedAiredCount: (show.unwatchedAiredCount as number | undefined) ?? null,
+      remainingAiredCount: (show.remainingAiredCount as number | undefined) ?? null,
+      upcomingDropKind: (show.upcomingDropKind as string | undefined) ?? null,
       status: (show.status as string) ?? 'watching',
+      keepWatching: show.keepWatching === true,
+      statusChosen: show.statusChosen === true,
+      trackFromSeason: previousFloor?.season ?? null,
+      trackFromEpisode: previousFloor?.episode ?? null,
     };
 
+    const now = new Date().toISOString();
+    const epKey = `${curSeason}x${curEpisode}`;
+    if (heldCheckRef.current?.id === sId && heldCheckRef.current.key === epKey) return;
+    const token = ++checkToken.current;
+    const hold = { id: sId, key: epKey };
+    heldCheckRef.current = hold;
+    setHeldCheck(hold);
     const alreadyWatched = watchedEps.find(
       e => e.tmdbShowId === tmdbId && e.seasonNumber === curSeason && e.episodeNumber === curEpisode
     );
-
     const episodeId = alreadyWatched ? null : instantId();
-    const now = new Date().toISOString();
-    const transactions: ReturnType<typeof db.tx.watchedEpisodes[string]['update']>[] = [];
+    const episodeName = (show.nextEpisodeName as string | undefined) ?? '';
 
-    let episodeRuntime: number | null = null;
-    let episodeName = (show.nextEpisodeName as string | undefined) ?? '';
-    let episodeOverview = '';
-    if (episodeId) {
+    await db.transact([
+      ...(episodeId
+        ? [
+            db.tx.watchedEpisodes[episodeId].update({
+              tmdbShowId: tmdbId,
+              seasonNumber: curSeason,
+              episodeNumber: curEpisode,
+              watchedAt: now,
+              ...watchedTitleFields(episodeName, ''),
+            }).link({ $user: user.id }),
+          ]
+        : []),
+      db.tx.userShows[sId].update({
+        status: 'watching',
+        keepWatching: true,
+        statusChosen: true,
+        lastTouchedAt: now,
+        ...(previousFloor
+          ? { trackFromSeason: previousFloor.season, trackFromEpisode: previousFloor.episode }
+          : {}),
+      }),
+    ]);
+    setUndo({
+      showId: sId,
+      episodeId,
+      showName: show.tmdbShowName as string,
+      previous,
+    });
+
+    try {
+      let episodeRuntime: number | null = episodeRuntimeMinutes(
+        show.nextEpisodeRuntime as number | undefined
+      );
+      let resolvedName = episodeName;
+      let episodeOverview = '';
       try {
         const season = await tmdb.getSeason(tmdbId, curSeason);
         const ep = (season.episodes ?? []).find(e => e.episode_number === curEpisode);
-        episodeRuntime = episodeRuntimeMinutes(ep?.runtime);
-        if (ep?.name) episodeName = ep.name;
+        episodeRuntime = episodeRuntimeMinutes(ep?.runtime) ?? episodeRuntime;
+        if (ep?.name) resolvedName = ep.name;
         if (ep?.overview) episodeOverview = ep.overview;
       } catch {
-        episodeRuntime = episodeRuntimeMinutes(show.episodeRuntime as number | undefined);
+        episodeRuntime = episodeRuntime ?? episodeRuntimeMinutes(show.episodeRuntime as number | undefined);
       }
+      if (token !== checkToken.current) return;
 
-      transactions.push(
-        db.tx.watchedEpisodes[episodeId].update({
-          tmdbShowId: tmdbId,
-          seasonNumber: curSeason,
-          episodeNumber: curEpisode,
-          watchedAt: now,
-          ...(episodeRuntime != null ? { runtime: episodeRuntime } : {}),
-          ...watchedTitleFields(episodeName, episodeOverview),
-        }).link({ $user: user.id })
-      );
-    }
-
-    try {
       const rows = watchedEps.filter(e => e.tmdbShowId === tmdbId);
-      const watched = new Set(
-        rows.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
-      );
+      const watched = new Set(rows.map(e => `${e.seasonNumber}x${e.episodeNumber}`));
       watched.add(`${curSeason}x${curEpisode}`);
-      const nextTitleKey = episodeTitleKey(episodeName);
-      const nextOverviewKey = episodeOverviewKey(episodeOverview);
-
       const progress = await findProgressFromTmdb(
         tmdbId,
         watched,
         curSeason,
         clampEarlyAccessDays(show.earlyAccessDays),
-        trackFromOf(show),
+        previousFloor,
         [
-          ...watchedHintsFromRows(rows),
+          ...watchedHintsFromRows(rows).filter(
+            hint => hint.season !== curSeason || hint.ep !== curEpisode
+          ),
           {
             season: curSeason,
             ep: curEpisode,
-            titleKey: nextTitleKey || undefined,
-            overviewKey: nextOverviewKey || undefined,
+            titleKey: episodeTitleKey(resolvedName) || undefined,
+            overviewKey: episodeOverviewKey(episodeOverview) || undefined,
           },
         ]
       );
+      if (token !== checkToken.current) return;
+      const updates = progressUpdates(progress);
+      if (updates.nextEpisodeNum != null) {
+        updates.status = 'watching';
+        updates.keepWatching = true;
+        updates.statusChosen = true;
+      }
+      if (updates.status === 'finished') {
+        updates.keepWatching = false;
+        setFinishedId(sId);
+        setUndo(current =>
+          current && current.showId === sId ? { ...current, finished: true } : current
+        );
+        await new Promise(resolve => setTimeout(resolve, FINISHED_HOLD_MS));
+        if (token !== checkToken.current) return;
+      }
+      if (previousFloor) {
+        updates.trackFromSeason = previousFloor.season;
+        updates.trackFromEpisode = previousFloor.episode;
+      }
       await db.transact([
-        ...transactions,
+        ...(episodeId
+          ? [
+              db.tx.watchedEpisodes[episodeId].update({
+                ...(episodeRuntime != null ? { runtime: episodeRuntime } : {}),
+                ...watchedTitleFields(resolvedName, episodeOverview),
+              }),
+            ]
+          : []),
         db.tx.userShows[sId].update({
-          ...progressUpdates(progress),
+          ...updates,
           lastTouchedAt: now,
         }),
       ]);
-      setUndo({
-        showId: sId,
-        episodeId,
-        showName: show.tmdbShowName as string,
-        previous,
-      });
+      setFinishedId(current => (current === sId ? null : current));
     } catch (e) {
       console.warn('Failed to advance episode', e);
-      if (transactions.length > 0) {
-        await db.transact([
-          ...transactions,
-          db.tx.userShows[sId].update({ lastTouchedAt: now }),
-        ]);
-        setUndo({
-          showId: sId,
-          episodeId,
-          showName: show.tmdbShowName as string,
-          previous,
-        });
+      if (heldCheckRef.current?.id === sId && heldCheckRef.current.key === epKey) {
+        heldCheckRef.current = null;
+        setHeldCheck(null);
       }
     }
   }
 
   async function undoLast() {
     if (!undo) return;
+    checkToken.current += 1;
+    heldCheckRef.current = null;
+    setHeldCheck(null);
+    setFinishedId(null);
     const snapshot = undo;
     setUndo(null);
     const showOp = db.tx.userShows[snapshot.showId].update({
@@ -487,7 +589,15 @@ export default function EpisodesScreen() {
       nextEpisodeName: snapshot.previous.nextEpisodeName,
       nextEpisodeAirDate: snapshot.previous.nextEpisodeAirDate,
       nextEpisodeStillPath: snapshot.previous.nextEpisodeStillPath,
+      nextEpisodeRuntime: snapshot.previous.nextEpisodeRuntime,
+      unwatchedAiredCount: snapshot.previous.unwatchedAiredCount,
+      remainingAiredCount: snapshot.previous.remainingAiredCount,
+      upcomingDropKind: snapshot.previous.upcomingDropKind,
       status: snapshot.previous.status,
+      keepWatching: snapshot.previous.keepWatching,
+      statusChosen: snapshot.previous.statusChosen,
+      trackFromSeason: snapshot.previous.trackFromSeason,
+      trackFromEpisode: snapshot.previous.trackFromEpisode,
     });
     await db.transact(
       snapshot.episodeId
@@ -543,6 +653,11 @@ export default function EpisodesScreen() {
         remainingCount={getRemainingCount(item)}
         upcomingDropKind={item.upcomingDropKind as string | null | undefined}
         canMark={isOnWatchlist(item)}
+        pendingCheck={
+          heldCheck?.id === item.id &&
+          heldCheck.key === `${item.nextSeasonNum}x${item.nextEpisodeNum}`
+        }
+        finished={finishedId === item.id}
         daysEarly={clampEarlyAccessDays(item.earlyAccessDays)}
         onShowPress={() => router.push(`/show/${item.tmdbShowId}`)}
         onCheckPress={() => handleCheck(item)}
@@ -628,7 +743,7 @@ export default function EpisodesScreen() {
           options={[
             { key: 'all', label: 'All' },
             { key: 'watchNext', label: 'Continue' },
-            { key: 'stale', label: 'Stale' },
+            { key: 'stale', label: "Haven't watched" },
             { key: 'notStarted', label: 'Not started' },
           ]}
           value={bucketFilter}
@@ -683,10 +798,21 @@ export default function EpisodesScreen() {
       )}
 
       {undo ? (
-        <View style={styles.undoBar}>
-          <Text style={styles.undoText} numberOfLines={1}>
-            Marked {undo.showName}
-          </Text>
+        <View style={[styles.undoBar, undo.finished && styles.undoBarFinished]}>
+          {undo.finished ? (
+            <View style={styles.finishedCopy}>
+              <Text style={styles.finishedTitle} numberOfLines={1}>
+                {undo.showName} is finished
+              </Text>
+              <Text style={styles.finishedText} numberOfLines={2}>
+                You watched every episode. The series has ended.
+              </Text>
+            </View>
+          ) : (
+            <Text style={styles.undoText} numberOfLines={1}>
+              Marked {undo.showName}
+            </Text>
+          )}
           <TouchableOpacity onPress={undoLast} hitSlop={8}>
             <Text style={styles.undoBtn}>Undo</Text>
           </TouchableOpacity>
@@ -820,6 +946,23 @@ const styles = StyleSheet.create({
     flex: 1,
     color: theme.text,
     fontSize: 14,
+  },
+  undoBarFinished: {
+    borderColor: theme.finished,
+    borderLeftWidth: 4,
+  },
+  finishedCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  finishedTitle: {
+    color: theme.finished,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  finishedText: {
+    color: theme.text,
+    fontSize: 13,
   },
   undoBtn: {
     color: theme.accent,

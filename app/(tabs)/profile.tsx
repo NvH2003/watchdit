@@ -114,6 +114,7 @@ export default function ProfileScreen() {
           nextEpisodeNum: s.nextEpisodeNum as number | undefined,
           watchedKeys,
           daysEarly: clampEarlyAccessDays(s.earlyAccessDays),
+          lastTouchedAt: s.lastTouchedAt as string | number | null | undefined,
         }
       );
     });

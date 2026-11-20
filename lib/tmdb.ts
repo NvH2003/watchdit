@@ -50,6 +50,7 @@ export interface TmdbShow {
   seasons?: TmdbSeasonSummary[];
   next_episode_to_air?: TmdbEpisode | null;
   last_episode_to_air?: TmdbEpisode | null;
+  networks?: { id: number; name: string; logo_path?: string | null; origin_country?: string }[];
 }
 
 export interface TmdbSeason {

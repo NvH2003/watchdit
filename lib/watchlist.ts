@@ -11,9 +11,18 @@ export function staleCutoff(now = new Date()): Date {
 
 export type WatchlistBucket = 'watchNext' | 'stale' | 'notStarted';
 
+export type ShowStatus =
+  | 'notStarted'
+  | 'watching'
+  | 'stale'
+  | 'watchLater'
+  | 'upToDate'
+  | 'finished';
+
 export type WatchlistShow = {
   id: string;
   status?: unknown;
+  keepWatching?: unknown;
   tmdbShowId?: unknown;
   addedAt?: unknown;
   lastTouchedAt?: unknown;
@@ -62,18 +71,44 @@ export function sortTime(
   return Number.isNaN(added) ? 0 : added;
 }
 
+/**
+ * The user chose Watching after the show was added. That choice stays in
+ * Continue watching until it ages past the stale cutoff.
+ */
+export function pinnedToContinueWatching(show: WatchlistShow, now = new Date()): boolean {
+  if (show.lastTouchedAt == null || show.addedAt == null) return false;
+  const touched = new Date(show.lastTouchedAt as string | number).getTime();
+  const added = new Date(show.addedAt as string | number).getTime();
+  if (!Number.isFinite(touched) || !Number.isFinite(added) || touched <= added) return false;
+  return touched >= staleCutoff(now).getTime();
+}
+
+/**
+ * Section for a show already on To watch.
+ * Not started and Haven't watched in a while are chosen statuses.
+ * Watching is Continue watching. Older rows without those statuses still
+ * fall back to watch history.
+ */
 export function bucketForShow(
   show: WatchlistShow,
   episodeCount: number,
   lastWatch: number | null
 ): WatchlistBucket {
-  const last = lastWatch ?? sortTime(show, null);
-  const isStale = last < staleCutoff().getTime();
+  if (show.status === 'notStarted') return 'notStarted';
+  if (show.status === 'stale') return 'stale';
+  if (show.status === 'watching' || show.keepWatching === true) return 'watchNext';
+  return inferredWatchlistBucket(show, episodeCount, lastWatch);
+}
 
-  // No watches yet: freshly added → Not started; promoted from Watch Later
-  // (touch set older than the stale cutoff) → Haven't watched in a while.
-  if (episodeCount === 0) return isStale ? 'stale' : 'notStarted';
-  if (isStale) return 'stale';
+/** Time-based section used for rows the user has not given a list status. */
+export function inferredWatchlistBucket(
+  show: WatchlistShow,
+  episodeCount: number,
+  lastWatch: number | null
+): WatchlistBucket {
+  if (episodeCount === 0) return 'notStarted';
+  const last = lastWatch ?? sortTime(show, null);
+  if (last < staleCutoff().getTime()) return 'stale';
   return 'watchNext';
 }
 

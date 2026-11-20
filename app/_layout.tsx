@@ -14,7 +14,7 @@ import AuthScreen from '@/components/AuthScreen';
 import HeaderBackButton from '@/components/HeaderBackButton';
 import { InstantConnecting, InstantUnreachable } from '@/components/InstantGate';
 import { theme } from '@/constants/theme';
-import { useDedupeUserShows, usePromoteAiredUpToDate, useBackfillEpisodeRuntimes } from '@/lib/userShows';
+import { useDedupeUserShows, useKeepChosenWatching, useSeparateListStatuses, usePromoteAiredUpToDate, useBackfillEpisodeRuntimes } from '@/lib/userShows';
 import { useBackfillMovieCollections } from '@/lib/userMovies';
 
 export { ErrorBoundary } from 'expo-router';
@@ -69,6 +69,8 @@ function InstantSession({ colorScheme }: { colorScheme: ReturnType<typeof useCol
   const [timedOut, setTimedOut] = useState(false);
   const hydrated = useClientOnlyValue(false, true);
   useDedupeUserShows();
+  useSeparateListStatuses();
+  useKeepChosenWatching();
   usePromoteAiredUpToDate();
   useBackfillEpisodeRuntimes();
   useBackfillMovieCollections();

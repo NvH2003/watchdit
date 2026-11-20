@@ -10,7 +10,7 @@ const _schema = i.schema({
       tmdbShowId: i.number().indexed(),
       tmdbShowName: i.string(),
       tmdbPosterPath: i.string().optional(),
-      status: i.string(), // watching | watchLater | finished | upToDate
+      status: i.string(), // notStarted | watching | stale | watchLater | upToDate | finished
       addedAt: i.date(),
       totalEpisodes: i.number().optional(),
       nextSeasonNum: i.number().optional(),
@@ -34,6 +34,10 @@ const _schema = i.schema({
       /** Ignore unwatched episodes before this S/E for status and Continue watching. */
       trackFromSeason: i.number().optional(),
       trackFromEpisode: i.number().optional(),
+      /** User chose Watching, so a future air date must not move the show to Up to date. */
+      keepWatching: i.boolean().optional(),
+      /** User picked Not started, Watching, or Haven't watched in a while themselves. */
+      statusChosen: i.boolean().optional(),
       ownerShowKey: i.string().unique().indexed().optional(),
     }),
     watchedEpisodes: i.entity({

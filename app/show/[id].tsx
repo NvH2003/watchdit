@@ -1121,6 +1121,9 @@ export default function ShowDetailScreen() {
   const broadcastCutCount = listedEpisodes.length;
   const onBbc = (show.networks ?? []).some(network => /bbc/i.test(network.name));
   const broadcastLabel = onBbc ? 'BBC' : 'original TV';
+  const imdbEpisodesUrl = imdbId
+    ? `https://www.imdb.com/title/${imdbId}/episodes/`
+    : `https://www.imdb.com/find/?q=${encodeURIComponent(show.name)}&s=tt&ttype=tv`;
   const broadcastCutNote =
     !tvdbUrl &&
     onNetflix &&
@@ -1350,6 +1353,19 @@ export default function ShowDetailScreen() {
                 </Text>
               </View>
             ) : null}
+            <View style={styles.imdbCheck}>
+              <Text style={styles.imdbCheckText}>
+                Total episodes for this series different on your streaming service?
+              </Text>
+              <TouchableOpacity
+                style={styles.imdbCheckBtn}
+                onPress={() => WebBrowser.openBrowserAsync(imdbEpisodesUrl)}
+                accessibilityRole="link"
+                accessibilityLabel={`Open the ${show.name} episode list on IMDb`}
+              >
+                <Text style={styles.imdbCheckBtnText}>Compare to IMDb</Text>
+              </TouchableOpacity>
+            </View>
             {seasonMeta.map(season => {
               const rawEps = episodesBySeason[season.season_number];
               const eps = rawEps
@@ -1705,8 +1721,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   broadcastNote: {
-    marginHorizontal: 16,
-    marginBottom: 12,
+    marginBottom: 8,
     paddingVertical: 12,
     paddingHorizontal: 14,
     backgroundColor: theme.elevated,
@@ -1718,6 +1733,35 @@ const styles = StyleSheet.create({
     color: theme.text,
     fontSize: 15,
     lineHeight: 22,
+  },
+  imdbCheck: {
+    marginBottom: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    backgroundColor: theme.surface,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.border,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  imdbCheckText: {
+    flex: 1,
+    color: theme.muted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  imdbCheckBtn: {
+    backgroundColor: '#f5c518',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  imdbCheckBtnText: {
+    color: '#121110',
+    fontSize: 13,
+    fontWeight: '800',
   },
   rating: {
     color: theme.gold,

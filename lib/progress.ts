@@ -132,7 +132,9 @@ export function readyForWatchlist(
   }
   const season = opts?.nextSeasonNum;
   const ep = opts?.nextEpisodeNum;
-  if (status === 'notStarted' || status === 'stale') return true;
+  if (status === 'notStarted' || status === 'stale') {
+    return !isFutureAirDate(nextEpisodeAirDate, opts?.daysEarly);
+  }
   if (
     opts?.watchedKeys &&
     hasNextPointer(season, ep) &&
@@ -146,9 +148,8 @@ export function readyForWatchlist(
       Date.now() - touched < 3 * 60 * 1000;
     if (!justChecked) return false;
   }
-  if (hasAired(nextEpisodeAirDate, opts?.daysEarly)) return true;
-  // Watching stays on To watch even when the next episode has not aired yet.
-  return status === 'watching' && hasNextPointer(season, ep);
+  // An episode that is not out yet is checked from the show page, not from To watch.
+  return hasAired(nextEpisodeAirDate, opts?.daysEarly);
 }
 
 function hasNextPointer(
@@ -176,7 +177,14 @@ export function readyForUpcoming(
     daysEarly?: number;
   }
 ): boolean {
-  if (status !== 'watching' && status !== 'upToDate') return false;
+  if (
+    status !== 'watching' &&
+    status !== 'upToDate' &&
+    status !== 'notStarted' &&
+    status !== 'stale'
+  ) {
+    return false;
+  }
   const season = opts?.nextSeasonNum;
   const ep = opts?.nextEpisodeNum;
   if (
@@ -186,10 +194,7 @@ export function readyForUpcoming(
   ) {
     return false;
   }
-  if (!isFutureAirDate(nextEpisodeAirDate, opts?.daysEarly)) return false;
-  // An explicit Watching choice is listed under Continue watching instead.
-  if (status === 'watching' && hasNextPointer(season, ep)) return false;
-  return true;
+  return isFutureAirDate(nextEpisodeAirDate, opts?.daysEarly);
 }
 
 /** TMDB TV status: Ended / Canceled vs still running. */

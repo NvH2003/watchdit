@@ -61,6 +61,8 @@ type UndoSnapshot = {
   showName: string;
   /** The check was the last episode of a series that has ended. */
   finished?: boolean;
+  /** Every aired episode is watched and the series continues. */
+  upToDate?: boolean;
   previous: {
     lastTouchedAt: string;
     nextSeasonNum: number;
@@ -532,10 +534,16 @@ export default function EpisodesScreen() {
       );
       if (token !== checkToken.current) return;
       const updates = progressUpdates(progress);
-      if (updates.nextEpisodeNum != null) {
-        updates.status = 'watching';
+      if (updates.status === 'watching') {
         updates.keepWatching = true;
         updates.statusChosen = true;
+      }
+      if (updates.status === 'upToDate') {
+        updates.keepWatching = false;
+        updates.statusChosen = true;
+        setUndo(current =>
+          current && current.showId === sId ? { ...current, upToDate: true } : current
+        );
       }
       if (updates.status === 'finished') {
         updates.keepWatching = false;
@@ -810,7 +818,9 @@ export default function EpisodesScreen() {
             </View>
           ) : (
             <Text style={styles.undoText} numberOfLines={1}>
-              Marked {undo.showName}
+              {undo.upToDate
+                ? `${undo.showName} is up to date`
+                : `Marked ${undo.showName}`}
             </Text>
           )}
           <TouchableOpacity onPress={undoLast} hitSlop={8}>

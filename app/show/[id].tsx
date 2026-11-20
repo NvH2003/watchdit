@@ -499,7 +499,12 @@ export default function ShowDetailScreen() {
         extra.nextEpisodeStillPath = listed?.still_path ?? '';
         if (runtime != null) extra.nextEpisodeRuntime = runtime;
       }
-      if (userShow?.status === 'watching' || userShow?.keepWatching === true) {
+      if (
+        userShow?.status === 'watching' ||
+        userShow?.status === 'upToDate' ||
+        userShow?.status === 'finished' ||
+        userShow?.keepWatching === true
+      ) {
         extra.status = 'watching';
         extra.keepWatching = true;
       }
@@ -543,7 +548,7 @@ export default function ShowDetailScreen() {
 
     const userShowId = userShow?.id ?? (await createShowOnList('watching'));
     if (!userShowId) return;
-    await applyProgress(userShowId, watched, extra, floor);
+    await applyProgress(userShowId, watched, extra, floor, isMarking);
   }
 
   function syncNextEpisode(
@@ -784,7 +789,8 @@ export default function ShowDetailScreen() {
     userShowId: string,
     watchedKeys: Set<string>,
     extra?: Record<string, unknown>,
-    trackFrom?: TrackFrom | null
+    trackFrom?: TrackFrom | null,
+    marking = true
   ) {
     const floor = trackFrom === undefined ? trackFromOf(userShow) : trackFrom;
     const progress = await findProgressFromTmdb(
@@ -800,9 +806,12 @@ export default function ShowDetailScreen() {
       lastTouchedAt: new Date().toISOString(),
       ...extra,
     };
-    const finished = progress.status === 'finished';
+    const finished = marking && progress.status === 'finished';
     if (finished) {
       updates.status = 'finished';
+      updates.keepWatching = false;
+    } else if (marking && progress.status === 'upToDate' && updates.status === 'watching') {
+      updates.status = 'upToDate';
       updates.keepWatching = false;
     }
     await db.transact([db.tx.userShows[userShowId].update(updates)]);

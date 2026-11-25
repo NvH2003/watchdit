@@ -465,6 +465,16 @@ export default function EpisodesScreen() {
     const tmdbId = show.tmdbShowId as number;
     const curSeason = (show.nextSeasonNum as number | undefined) ?? 1;
     const curEpisode = (show.nextEpisodeNum as number | undefined) ?? 1;
+    const epKey = `${curSeason}x${curEpisode}`;
+    if (heldChecksRef.current[sId]?.key === epKey) return;
+    const token = ++checkToken.current;
+    checksInFlight.current.set(sId, token);
+    const release = () => {
+      if (checksInFlight.current.get(sId) === token) checksInFlight.current.delete(sId);
+      releaseHold(sId, token);
+    };
+    holdCheck(sId, { key: epKey, token });
+
     const previousSortIso = new Date(
       sortTime(show, lastWatchByShow.get(tmdbId) ?? null)
     ).toISOString();
@@ -488,15 +498,6 @@ export default function EpisodesScreen() {
     };
 
     const now = new Date().toISOString();
-    const epKey = `${curSeason}x${curEpisode}`;
-    if (heldChecksRef.current[sId]?.key === epKey) return;
-    const token = ++checkToken.current;
-    checksInFlight.current.set(sId, token);
-    const release = () => {
-      if (checksInFlight.current.get(sId) === token) checksInFlight.current.delete(sId);
-      releaseHold(sId, token);
-    };
-    holdCheck(sId, { key: epKey, token });
     const alreadyWatched = watchedEps.find(
       e => e.tmdbShowId === tmdbId && e.seasonNumber === curSeason && e.episodeNumber === curEpisode
     );

@@ -18,9 +18,11 @@ const RED = theme.accent;
 const GREEN = theme.check;
 const PURPLE = theme.finished;
 
+const SMOOTH = Easing.bezier(0.45, 0, 0.55, 1);
+
 /**
  * Red = still to mark.
- * Pending = green with pulse + spin while the next episode is loading.
+ * Pending = green with a soft breathe + ring while the next episode is loading.
  * Watched = solid green. Finished = purple.
  */
 export default function EpisodeCheck({
@@ -37,80 +39,97 @@ export default function EpisodeCheck({
   const scale = useSharedValue(1);
   const progress = useSharedValue(watched || pending ? 1 : 0);
   const done = useSharedValue(finished ? 1 : 0);
-  const pulse = useSharedValue(1);
+  const breathe = useSharedValue(0);
   const spin = useSharedValue(0);
+  const ringOpacity = useSharedValue(0);
   const mounted = useRef(false);
-  const ringSize = size + 8;
+  const wasActive = useRef(watched || pending);
+  const ringSize = size + 10;
 
   useEffect(() => {
+    const active = watched || pending;
     if (!mounted.current) {
       mounted.current = true;
-      progress.value = watched || pending ? 1 : 0;
+      progress.value = active ? 1 : 0;
+      wasActive.current = active;
       return;
     }
-    if (watched || pending) {
-      progress.value = withTiming(1, { duration: 280, easing: Easing.out(Easing.cubic) });
-      scale.value = withSequence(
-        withTiming(0.72, { duration: 70, easing: Easing.out(Easing.quad) }),
-        withSpring(1.22, { damping: 9, stiffness: 420, mass: 0.4 }),
-        withSpring(1, { damping: 12, stiffness: 280 })
-      );
-    } else {
-      progress.value = withTiming(0, { duration: 180 });
-      scale.value = withTiming(1, { duration: 120 });
+    if (active && !wasActive.current) {
+      const snap = pending;
+      progress.value = withTiming(1, {
+        duration: snap ? 85 : 340,
+        easing: snap ? Easing.out(Easing.cubic) : SMOOTH,
+      });
+      scale.value = snap
+        ? withSequence(
+            withTiming(0.88, { duration: 45, easing: Easing.out(Easing.cubic) }),
+            withSpring(1.08, { damping: 18, stiffness: 520, mass: 0.35 }),
+            withSpring(1, { damping: 20, stiffness: 360, mass: 0.4 })
+          )
+        : withSequence(
+            withTiming(0.82, { duration: 90, easing: Easing.out(Easing.cubic) }),
+            withSpring(1.1, { damping: 16, stiffness: 300, mass: 0.55 }),
+            withSpring(1, { damping: 18, stiffness: 220, mass: 0.5 })
+          );
+    } else if (!active && wasActive.current) {
+      progress.value = withTiming(0, { duration: 280, easing: SMOOTH });
+      scale.value = withTiming(1, { duration: 220, easing: SMOOTH });
     }
+    wasActive.current = active;
   }, [watched, pending, progress, scale]);
 
   useEffect(() => {
-    done.value = withTiming(finished ? 1 : 0, { duration: 360 });
+    done.value = withTiming(finished ? 1 : 0, { duration: 420, easing: SMOOTH });
     if (finished) {
       scale.value = withSequence(
-        withSpring(1.35, { damping: 8, stiffness: 380, mass: 0.4 }),
-        withSpring(1, { damping: 12, stiffness: 260 })
+        withSpring(1.28, { damping: 14, stiffness: 300, mass: 0.5 }),
+        withSpring(1, { damping: 16, stiffness: 220, mass: 0.5 })
       );
     }
   }, [finished, done, scale]);
 
   useEffect(() => {
     if (pending && !finished) {
-      pulse.value = withRepeat(
-        withSequence(
-          withTiming(1.1, { duration: 480, easing: Easing.inOut(Easing.quad) }),
-          withTiming(1, { duration: 480, easing: Easing.inOut(Easing.quad) })
-        ),
+      ringOpacity.value = withTiming(1, { duration: 140, easing: Easing.out(Easing.cubic) });
+      breathe.value = withRepeat(
+        withTiming(1, { duration: 1300, easing: Easing.inOut(Easing.quad) }),
         -1,
-        false
+        true
       );
-      spin.value = 0;
       spin.value = withRepeat(
-        withTiming(1, { duration: 900, easing: Easing.linear }),
+        withTiming(1, { duration: 1600, easing: Easing.linear }),
         -1,
         false
       );
       return () => {
-        cancelAnimation(pulse);
+        cancelAnimation(breathe);
         cancelAnimation(spin);
-        pulse.value = 1;
+        breathe.value = 0;
         spin.value = 0;
       };
     }
-    cancelAnimation(pulse);
+    cancelAnimation(breathe);
     cancelAnimation(spin);
-    pulse.value = withTiming(1, { duration: 160 });
-    spin.value = withTiming(0, { duration: 160 });
-  }, [pending, finished, pulse, spin]);
+    ringOpacity.value = withTiming(0, { duration: 400, easing: SMOOTH });
+    breathe.value = withTiming(0, { duration: 280, easing: SMOOTH });
+    spin.value = withTiming(0, { duration: 280, easing: SMOOTH });
+  }, [pending, finished, breathe, spin, ringOpacity]);
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value * (pending && !finished ? pulse.value : 1) }],
-    backgroundColor: interpolateColor(
-      done.value,
-      [0, 1],
-      [interpolateColor(progress.value, [0, 1], [RED, GREEN]), PURPLE]
-    ),
-  }));
+  const animatedStyle = useAnimatedStyle(() => {
+    const breatheScale = interpolate(breathe.value, [0, 1], [1, 1.055]);
+    const pendingMul = ringOpacity.value > 0.02 ? breatheScale : 1;
+    return {
+      transform: [{ scale: scale.value * pendingMul }],
+      backgroundColor: interpolateColor(
+        done.value,
+        [0, 1],
+        [interpolateColor(progress.value, [0, 1], [RED, GREEN]), PURPLE]
+      ),
+    };
+  });
 
   const ringStyle = useAnimatedStyle(() => ({
-    opacity: pending && !finished ? 1 : 0,
+    opacity: ringOpacity.value * 0.92,
     transform: [{ rotate: `${interpolate(spin.value, [0, 1], [0, 360])}deg` }],
   }));
 
@@ -124,7 +143,7 @@ export default function EpisodeCheck({
             width: ringSize,
             height: ringSize,
             borderRadius: ringSize / 2,
-            borderWidth: Math.max(2, Math.round(size * 0.08)),
+            borderWidth: Math.max(2, Math.round(size * 0.07)),
           },
           ringStyle,
         ]}
@@ -161,9 +180,11 @@ const styles = StyleSheet.create({
   },
   ring: {
     position: 'absolute',
-    borderColor: 'transparent',
-    borderTopColor: GREEN,
-    borderRightColor: 'rgba(61, 206, 122, 0.35)',
+    borderColor: 'rgba(61, 206, 122, 0.12)',
+    borderTopColor: 'rgba(61, 206, 122, 0.95)',
+    borderRightColor: 'rgba(61, 206, 122, 0.45)',
+    borderBottomColor: 'rgba(61, 206, 122, 0.08)',
+    borderLeftColor: 'rgba(61, 206, 122, 0.2)',
   },
   circle: {
     justifyContent: 'center',

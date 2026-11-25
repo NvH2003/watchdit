@@ -15,10 +15,10 @@ import Swipeable from 'react-native-gesture-handler/Swipeable';
 import Animated, {
   Easing,
   cancelAnimation,
+  interpolate,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
-  withSequence,
   withTiming,
 } from 'react-native-reanimated';
 import { posterUrl, stillUrl, formatAirsLabel, formatRuntime } from '@/lib/tmdb';
@@ -30,6 +30,8 @@ import { hasAired, isFutureAirDate, upcomingAirsCaption } from '@/lib/progress';
 import type { ShowStatus } from '@/lib/watchlist';
 
 export type { ShowStatus };
+
+const SMOOTH_EASE = Easing.bezier(0.45, 0, 0.55, 1);
 
 interface ShowRowTVProps {
   id: string;
@@ -153,33 +155,40 @@ export default function ShowRowTV({
   const [detailName, setDetailName] = useState(nextEpisodeName ?? '');
   const [detailRuntime, setDetailRuntime] = useState(nextEpisodeRuntime ?? null);
   const [detailVote, setDetailVote] = useState<number | null>(null);
-  const flashOpacity = useSharedValue(0);
+  const flashBreathe = useSharedValue(0);
+  const flashVisible = useSharedValue(0);
+  const [tapActive, setTapActive] = useState(false);
   const poster = posterUrl(posterPath, 'w185');
   const still = stillUrl(nextEpisodeStillPath, 'w185');
   const thumb = still ?? poster;
-  const checking = pendingCheck && !finished;
+  const checking = (pendingCheck || tapActive) && !finished;
+
+  useEffect(() => {
+    if (!pendingCheck) setTapActive(false);
+  }, [pendingCheck]);
 
   useEffect(() => {
     if (!checking) {
-      cancelAnimation(flashOpacity);
-      flashOpacity.value = withTiming(0, { duration: 160 });
+      cancelAnimation(flashBreathe);
+      flashVisible.value = withTiming(0, { duration: 400, easing: SMOOTH_EASE });
+      flashBreathe.value = withTiming(0, { duration: 320, easing: SMOOTH_EASE });
       return;
     }
-    flashOpacity.value = withRepeat(
-      withSequence(
-        withTiming(1, { duration: 420, easing: Easing.out(Easing.quad) }),
-        withTiming(0.45, { duration: 420, easing: Easing.in(Easing.quad) })
-      ),
+    flashVisible.value = withTiming(1, { duration: tapActive ? 140 : 360, easing: SMOOTH_EASE });
+    flashBreathe.value = withRepeat(
+      withTiming(1, { duration: 1300, easing: Easing.inOut(Easing.quad) }),
       -1,
-      false
+      true
     );
     return () => {
-      cancelAnimation(flashOpacity);
+      cancelAnimation(flashBreathe);
     };
-  }, [checking, flashOpacity]);
+  }, [checking, flashBreathe, flashVisible, tapActive]);
 
   const flashStyle = useAnimatedStyle(() => ({
-    opacity: flashOpacity.value,
+    opacity:
+      flashVisible.value *
+      interpolate(flashBreathe.value, [0, 1], [0.32, 0.78]),
   }));
 
   const season = nextSeasonNum ?? 1;
@@ -294,14 +303,19 @@ export default function ShowRowTV({
           <Ionicons name="ellipsis-horizontal" size={20} color={theme.muted} />
         </TouchableOpacity>
         {canMark ? (
-          <TouchableOpacity
+          <Pressable
             style={styles.iconBtn}
+            onPressIn={() => {
+              if (finished) return;
+              flashVisible.value = 1;
+              flashBreathe.value = 0;
+              setTapActive(true);
+            }}
             onPress={() => {
-              if (checking) return;
+              if (pendingCheck) return;
               onCheckPress();
             }}
-            activeOpacity={0.75}
-            hitSlop={8}
+            hitSlop={10}
             accessibilityRole="button"
             accessibilityLabel={
               finished
@@ -312,12 +326,12 @@ export default function ShowRowTV({
             }
           >
             <EpisodeCheck
-              watched={pendingCheck || finished}
+              watched={checking || finished}
               pending={checking}
               finished={finished}
               size={28}
             />
-          </TouchableOpacity>
+          </Pressable>
         ) : (
           <View style={styles.iconBtn} accessibilityLabel="This episode isn't out yet">
             <Ionicons name="time-outline" size={20} color={theme.faint} />
@@ -413,7 +427,7 @@ const styles = StyleSheet.create({
   },
   stillFlash: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(61, 206, 122, 0.55)',
+    backgroundColor: 'rgba(61, 206, 122, 0.65)',
     justifyContent: 'center',
     alignItems: 'center',
   },

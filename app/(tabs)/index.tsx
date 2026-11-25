@@ -95,7 +95,7 @@ type UndoSnapshot = {
 
 const UNDO_MS = 8000;
 /** How long a finished series keeps its purple check on the list before it moves off. */
-const FINISHED_HOLD_MS = 2200;
+const FINISHED_HOLD_MS = 3000;
 
 const SECTION_META: { key: WatchlistBucket; title: string }[] = [
   { key: 'watchNext', title: 'Continue watching' },

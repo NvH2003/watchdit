@@ -19,6 +19,7 @@ import Animated, {
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
+  withSequence,
   withTiming,
 } from 'react-native-reanimated';
 import { posterUrl, stillUrl, formatAirsLabel, formatRuntime } from '@/lib/tmdb';
@@ -157,6 +158,8 @@ export default function ShowRowTV({
   const [detailVote, setDetailVote] = useState<number | null>(null);
   const flashBreathe = useSharedValue(0);
   const flashVisible = useSharedValue(0);
+  const finishedGlow = useSharedValue(0);
+  const finishedBurst = useSharedValue(0);
   const [tapActive, setTapActive] = useState(false);
   const poster = posterUrl(posterPath, 'w185');
   const still = stillUrl(nextEpisodeStillPath, 'w185');
@@ -189,6 +192,47 @@ export default function ShowRowTV({
     opacity:
       flashVisible.value *
       interpolate(flashBreathe.value, [0, 1], [0.32, 0.78]),
+  }));
+
+  useEffect(() => {
+    if (!finished) {
+      cancelAnimation(finishedGlow);
+      cancelAnimation(finishedBurst);
+      finishedGlow.value = withTiming(0, { duration: 350, easing: SMOOTH_EASE });
+      finishedBurst.value = withTiming(0, { duration: 280, easing: SMOOTH_EASE });
+      return;
+    }
+    finishedBurst.value = withSequence(
+      withTiming(1, { duration: 650, easing: Easing.out(Easing.cubic) }),
+      withTiming(0.15, { duration: 900, easing: SMOOTH_EASE })
+    );
+    finishedGlow.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 520, easing: Easing.inOut(Easing.quad) }),
+        withTiming(0.4, { duration: 520, easing: Easing.inOut(Easing.quad) })
+      ),
+      3,
+      false
+    );
+    return () => {
+      cancelAnimation(finishedGlow);
+      cancelAnimation(finishedBurst);
+    };
+  }, [finished, finishedGlow, finishedBurst]);
+
+  const finishedFlashStyle = useAnimatedStyle(() => ({
+    opacity:
+      interpolate(finishedBurst.value, [0, 0.3, 1], [0, 0.92, 0.55]) *
+      interpolate(finishedGlow.value, [0, 1], [0.55, 1]),
+  }));
+
+  const finishedBadgeStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(finishedBurst.value, [0, 0.25, 1], [0, 1, 0.85]),
+    transform: [
+      {
+        scale: interpolate(finishedBurst.value, [0, 0.4, 1], [0.6, 1.12, 1]),
+      },
+    ],
   }));
 
   const season = nextSeasonNum ?? 1;
@@ -260,6 +304,12 @@ export default function ShowRowTV({
               <Text style={styles.stillFlashMark}>✓</Text>
             </Animated.View>
           ) : null}
+          {finished ? (
+            <Animated.View style={[styles.finishedStill, finishedFlashStyle]} pointerEvents="none">
+              <Animated.Text style={[styles.finishedStillBadge, finishedBadgeStyle]}>Ended</Animated.Text>
+              <Text style={styles.finishedStillStar}>★</Text>
+            </Animated.View>
+          ) : null}
         </View>
       </TouchableOpacity>
 
@@ -327,7 +377,7 @@ export default function ShowRowTV({
           >
             <EpisodeCheck
               watched={checking || finished}
-              pending={checking}
+              pending={checking && !finished}
               finished={finished}
               size={28}
             />
@@ -432,6 +482,25 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   stillFlashMark: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: '800',
+  },
+  finishedStill: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(92, 58, 154, 0.72)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 2,
+  },
+  finishedStillBadge: {
+    color: theme.gold,
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+  },
+  finishedStillStar: {
     color: '#fff',
     fontSize: 22,
     fontWeight: '800',

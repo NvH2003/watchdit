@@ -2,14 +2,30 @@ const API_KEY = process.env.EXPO_PUBLIC_TMDB_API_KEY ?? '';
 const BASE_URL = 'https://api.themoviedb.org/3';
 export const IMG_BASE = 'https://image.tmdb.org/t/p';
 
+/** One check reads the same show and season several times; air dates can wait this long. */
+const CACHE_MS = 2 * 60 * 1000;
+const responseCache = new Map<string, { at: number; body: Promise<string> }>();
+
 async function get<T>(path: string, params: Record<string, string> = {}): Promise<T> {
   const url = new URL(`${BASE_URL}${path}`);
   url.searchParams.set('api_key', API_KEY);
   if (!('language' in params)) url.searchParams.set('language', 'en-US');
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`TMDB ${res.status}: ${path}`);
-  return res.json() as Promise<T>;
+  const key = url.toString();
+  const cached = responseCache.get(key);
+  if (cached && Date.now() - cached.at < CACHE_MS) {
+    return JSON.parse(await cached.body) as T;
+  }
+  const body = fetch(key).then(res => {
+    if (!res.ok) throw new Error(`TMDB ${res.status}: ${path}`);
+    return res.text();
+  });
+  responseCache.set(key, { at: Date.now(), body });
+  body.catch(() => {
+    if (responseCache.get(key)?.body === body) responseCache.delete(key);
+  });
+  // Parsed per call so callers never share (and mutate) one object.
+  return JSON.parse(await body) as T;
 }
 
 export interface TmdbSeasonSummary {

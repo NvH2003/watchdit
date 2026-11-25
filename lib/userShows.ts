@@ -298,8 +298,9 @@ export function useKeepChosenWatching() {
 
 /**
  * When an up-to-date show's next *unwatched* episode airs, flip to watching.
- * Also repairs stale nextEpisode* rows that still point at an already-checked episode
- * (those used to wrongly flood To watch after the air-date promote change).
+ * A pointer that still names an episode just checked is left alone: wiping it
+ * races the check that is looking up the following episode, and the show
+ * drops off To watch and Coming up until that lookup is opened again.
  */
 export function usePromoteAiredUpToDate() {
   const { user } = db.useAuth();
@@ -348,17 +349,6 @@ export function usePromoteAiredUpToDate() {
       set.add(`${e.seasonNumber}x${e.episodeNumber}`);
     }
 
-    const clearStaleNext = {
-      nextSeasonNum: null,
-      nextEpisodeNum: null,
-      nextEpisodeName: '',
-      nextEpisodeAirDate: '',
-      nextEpisodeStillPath: '',
-      nextEpisodeRuntime: null,
-      unwatchedAiredCount: 0,
-      remainingAiredCount: 0,
-    };
-
     const txs: ReturnType<typeof db.tx.userShows[string]['update']>[] = [];
 
     for (const s of data.userShows) {
@@ -381,16 +371,9 @@ export function usePromoteAiredUpToDate() {
           : null;
       const nextAlreadyWatched = Boolean(nextKey && watched?.has(nextKey));
 
-      if (nextAlreadyWatched) {
-        // Stale pointer at a checked episode — park as up to date until TMDB refresh.
-        txs.push(
-          db.tx.userShows[s.id].update({
-            status: 'upToDate',
-            ...clearStaleNext,
-          })
-        );
-        continue;
-      }
+      // The check writes the watched episode before it has the following one.
+      // Clearing the pointer here used to land after that lookup and drop the show.
+      if (nextAlreadyWatched) continue;
 
       if (s.status === 'upToDate' && hasAired(air, clampEarlyAccessDays(s.earlyAccessDays)) && nextKey) {
         txs.push(db.tx.userShows[s.id].update({ status: 'watching' }));

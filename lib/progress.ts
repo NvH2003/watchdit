@@ -302,6 +302,19 @@ export function isBeforeTrackFrom(
   );
 }
 
+/** Season from TMDB, or null when TMDB has no such season. Retries once on other errors. */
+async function getSeasonOrMissing(tmdbShowId: number, seasonNumber: number) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await tmdb.getSeason(tmdbShowId, seasonNumber);
+    } catch (e) {
+      if (String(e).includes('TMDB 404')) return null;
+      if (attempt >= 1) throw e;
+      await new Promise(resolve => setTimeout(resolve, 800));
+    }
+  }
+}
+
 /** Pull a skip-ahead floor back so an unchecked episode counts again. */
 export function trackFromCovering(
   floor: TrackFrom | null,
@@ -499,7 +512,9 @@ export async function findProgressFromTmdb(
     return n > 0 && n > max ? n : max;
   }, 0);
   const totalSeasons = Math.max(declaredSeasons, metaMax);
-  const from = Math.max(1, trackFrom?.season ?? startSeason);
+  // Prefer startSeason so a watchlist check at S24 does not re-fetch S1…S23
+  // when an older trackFrom floor still points at the start of the run.
+  const from = Math.max(1, startSeason, trackFrom?.season ?? 1);
   const trackPremiere = broadcastDay(
     seasonMeta.find(season => season.season_number === (trackFrom?.season ?? from))?.air_date
   );
@@ -587,13 +602,23 @@ export async function findProgressFromTmdb(
     }
   }
 
-  for (let s = useNetflix ? totalSeasons + 1 : from; s <= totalSeasons; s++) {
-    let season;
-    try {
-      season = await tmdb.getSeason(tmdbShowId, s);
-    } catch {
-      continue;
-    }
+  const seasonNumbers: number[] = [];
+  for (let s = useNetflix ? totalSeasons + 1 : from; s <= totalSeasons; s++) seasonNumbers.push(s);
+  const fetchedSeasons: Awaited<ReturnType<typeof getSeasonOrMissing>>[] = [];
+  const SEASON_BATCH = 6;
+  for (let i = 0; i < seasonNumbers.length; i += SEASON_BATCH) {
+    // A failed fetch throws so it never looks like "no episodes left".
+    fetchedSeasons.push(
+      ...(await Promise.all(
+        seasonNumbers.slice(i, i + SEASON_BATCH).map(s => getSeasonOrMissing(tmdbShowId, s))
+      ))
+    );
+  }
+
+  for (let idx = 0; idx < seasonNumbers.length; idx++) {
+    const s = seasonNumbers[idx];
+    const season = fetchedSeasons[idx];
+    if (!season) continue;
     const eps = (season.episodes ?? []).filter(e => e.season_number > 0);
     const listed = eps.filter(e => !isUnpublishedPlaceholder(e));
     for (const e of listed) {

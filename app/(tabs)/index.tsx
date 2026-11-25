@@ -27,6 +27,7 @@ import {
   trackFromOf,
   upcomingAirsCaption,
   trackFromCovering,
+  episodeIsAvailable,
 } from '@/lib/progress';
 import { episodeRuntimeMinutes } from '@/lib/stats';
 import { episodeTitleKey, episodeOverviewKey, watchedHintsFromRows, watchedTitleFields } from '@/lib/catalog';
@@ -54,6 +55,8 @@ import TabScreen from '@/components/TabScreen';
 import { CollapsibleScrollView } from '@/components/TabBarCollapse';
 
 type TabKey = 'watchlist' | 'upcoming';
+
+type HeldCheck = { key: string; token: number };
 
 type UndoSnapshot = {
   showId: string;
@@ -106,8 +109,9 @@ export default function EpisodesScreen() {
   const [activeTab, setActiveTab] = useState<TabKey>('watchlist');
   const [isGrid, setIsGrid] = useState(false);
   const [undo, setUndo] = useState<UndoSnapshot | null>(null);
-  const [heldCheck, setHeldCheck] = useState<{ id: string; key: string } | null>(null);
-  const heldCheckRef = useRef<{ id: string; key: string } | null>(null);
+  /** Show id → episode that was just checked and is still saving its next episode. */
+  const [heldChecks, setHeldChecks] = useState<Record<string, HeldCheck>>({});
+  const heldChecksRef = useRef<Record<string, HeldCheck>>({});
   const [finishedId, setFinishedId] = useState<string | null>(null);
   const [bucketFilter, setBucketFilter] = useState<'all' | WatchlistBucket>('all');
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -129,14 +133,52 @@ export default function EpisodesScreen() {
   const checkingRef = useRef(false);
   const recategorizedRef = useRef(false);
   const checkToken = useRef(0);
+  /** Show id → token of the check still saving its next episode. */
+  const checksInFlight = useRef(new Map<string, number>());
+  /** Show id → undo generation; any check with a lower token must stop and re-restore. */
+  const undoGeneration = useRef(new Map<string, number>());
+
+  const watchedKeysByShow = useMemo(() => {
+    const byShow = new Map<number, Set<string>>();
+    for (const e of watchedEps) {
+      const tmdbId = e.tmdbShowId as number;
+      let keys = byShow.get(tmdbId);
+      if (!keys) {
+        keys = new Set();
+        byShow.set(tmdbId, keys);
+      }
+      keys.add(`${e.seasonNumber}x${e.episodeNumber}`);
+    }
+    return byShow;
+  }, [watchedEps]);
+  const lastWatchByShow = useMemo(() => {
+    const byShow = new Map<number, number>();
+    for (const e of watchedEps) {
+      const t = new Date(e.watchedAt as string | number).getTime();
+      if (!(t > 0)) continue;
+      const tmdbId = e.tmdbShowId as number;
+      if (t > (byShow.get(tmdbId) ?? 0)) byShow.set(tmdbId, t);
+    }
+    return byShow;
+  }, [watchedEps]);
+  const noKeys = useMemo(() => new Set<string>(), []);
+
+  function holdCheck(showId: string, hold: HeldCheck) {
+    heldChecksRef.current = { ...heldChecksRef.current, [showId]: hold };
+    setHeldChecks(heldChecksRef.current);
+  }
+
+  /** Without a token, drops whatever is held for the show (undo). */
+  function releaseHold(showId: string, token?: number) {
+    const current = heldChecksRef.current[showId];
+    if (current == null || (token != null && current.token !== token)) return;
+    const { [showId]: _, ...rest } = heldChecksRef.current;
+    heldChecksRef.current = rest;
+    setHeldChecks(rest);
+  }
 
   function isOnWatchlist(s: (typeof allShows)[0]) {
-    const tmdbId = s.tmdbShowId as number;
-    const watchedKeys = new Set(
-      watchedEps
-        .filter(e => e.tmdbShowId === tmdbId)
-        .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
-    );
+    const watchedKeys = watchedKeysByShow.get(s.tmdbShowId as number) ?? noKeys;
     return readyForWatchlist(
       s.status as string | undefined,
       s.nextEpisodeAirDate as string | undefined,
@@ -176,6 +218,44 @@ export default function EpisodesScreen() {
     };
   }, []);
 
+  async function refreshedProgress(show: (typeof allShows)[0]) {
+    const tmdbId = show.tmdbShowId as number;
+    const rows = watchedEps.filter(e => e.tmdbShowId === tmdbId);
+    const watched = new Set(rows.map(e => `${e.seasonNumber}x${e.episodeNumber}`));
+    const progress = await findProgressFromTmdb(
+      tmdbId,
+      watched,
+      (show.nextSeasonNum as number | undefined) ?? 1,
+      clampEarlyAccessDays(show.earlyAccessDays),
+      trackFromOf(show),
+      watchedHintsFromRows(rows)
+    );
+    const updates = progressUpdates(progress);
+    if (
+      (updates.nextEpisodeNum == null || updates.nextSeasonNum == null) &&
+      show.nextEpisodeNum != null &&
+      !watched.has(`${show.nextSeasonNum}x${show.nextEpisodeNum}`)
+    ) {
+      updates.nextSeasonNum = show.nextSeasonNum;
+      updates.nextEpisodeNum = show.nextEpisodeNum;
+      updates.nextEpisodeName = show.nextEpisodeName ?? '';
+      updates.nextEpisodeAirDate = show.nextEpisodeAirDate ?? '';
+      updates.nextEpisodeStillPath = show.nextEpisodeStillPath ?? '';
+      updates.nextEpisodeRuntime = show.nextEpisodeRuntime ?? null;
+    }
+    if (show.keepWatching === true && updates.status === 'upToDate') {
+      updates.status = 'watching';
+    } else if (
+      show.status === 'watching' &&
+      show.keepWatching !== true &&
+      show.statusChosen !== true
+    ) {
+      const bucket = inferredWatchlistBucket(show, watched.size, lastWatchedAt(rows, tmdbId));
+      if (bucket !== 'watchNext') updates.status = bucket;
+    }
+    return updates;
+  }
+
   // Recategorize imported/stale shows: watching vs up to date vs finished.
   useFocusEffect(
     useCallback(() => {
@@ -196,12 +276,7 @@ export default function EpisodesScreen() {
         const nextWatched =
           season != null &&
           ep != null &&
-          watchedEps.some(
-            e =>
-              e.tmdbShowId === tmdbId &&
-              e.seasonNumber === season &&
-              e.episodeNumber === ep
-          );
+          Boolean(watchedKeysByShow.get(tmdbId)?.has(`${season}x${ep}`));
         // Stale next pointer or newly aired upToDate — refresh from TMDB.
         if (nextWatched) return true;
         if (s.status === 'upToDate' && hasAired(air, clampEarlyAccessDays(s.earlyAccessDays))) return true;
@@ -238,54 +313,19 @@ export default function EpisodesScreen() {
           for (let i = 0; i < toCheck.length; i++) {
             if (cancelled) return;
             const show = toCheck[i];
-            const tmdbId = show.tmdbShowId as number;
-            const rows = watchedEps.filter(e => e.tmdbShowId === tmdbId);
-            const watched = new Set(
-              rows.map(e => `${e.seasonNumber}x${e.episodeNumber}`)
-            );
-            const startSeason = (show.nextSeasonNum as number | undefined) ?? 1;
+            if (checksInFlight.current.has(show.id)) continue;
             if (i > 0 && i % 5 === 0) {
               await new Promise(r => setTimeout(r, 400));
             }
-            const progress = await findProgressFromTmdb(
-              tmdbId,
-              watched,
-              startSeason,
-              clampEarlyAccessDays(show.earlyAccessDays),
-              trackFromOf(show),
-              watchedHintsFromRows(rows)
-            );
-            if (cancelled) return;
-            const updates = progressUpdates(progress);
-            if (
-              (updates.nextEpisodeNum == null || updates.nextSeasonNum == null) &&
-              show.nextEpisodeNum != null &&
-              !watched.has(`${show.nextSeasonNum}x${show.nextEpisodeNum}`)
-            ) {
-              updates.nextSeasonNum = show.nextSeasonNum;
-              updates.nextEpisodeNum = show.nextEpisodeNum;
-              updates.nextEpisodeName = show.nextEpisodeName ?? '';
-              updates.nextEpisodeAirDate = show.nextEpisodeAirDate ?? '';
-              updates.nextEpisodeStillPath = show.nextEpisodeStillPath ?? '';
-              updates.nextEpisodeRuntime = show.nextEpisodeRuntime ?? null;
+            try {
+              const updates = await refreshedProgress(show);
+              if (cancelled) return;
+              // A check that started meanwhile writes its own, newer next episode.
+              if (checksInFlight.current.has(show.id)) continue;
+              await db.transact([db.tx.userShows[show.id].update(updates)]);
+            } catch (e) {
+              console.warn('Failed to refresh show progress', show.tmdbShowName, e);
             }
-            if (show.keepWatching === true && updates.status === 'upToDate') {
-              updates.status = 'watching';
-            } else if (
-              show.status === 'watching' &&
-              show.keepWatching !== true &&
-              show.statusChosen !== true
-            ) {
-              const bucket = inferredWatchlistBucket(
-                show,
-                watched.size,
-                lastWatchedAt(rows, tmdbId)
-              );
-              if (bucket !== 'watchNext') updates.status = bucket;
-            }
-            await db.transact([
-              db.tx.userShows[show.id].update(updates),
-            ]);
           }
           recategorizedRef.current = true;
         } catch (e) {
@@ -304,12 +344,7 @@ export default function EpisodesScreen() {
 
   const watchlistShows = allShows.filter(s => isOnWatchlist(s));
   const upcomingShows = allShows.filter(s => {
-    const tmdbId = s.tmdbShowId as number;
-    const watchedKeys = new Set(
-      watchedEps
-        .filter(e => e.tmdbShowId === tmdbId)
-        .map(e => `${e.seasonNumber}x${e.episodeNumber}`)
-    );
+    const watchedKeys = watchedKeysByShow.get(s.tmdbShowId as number) ?? noKeys;
     return readyForUpcoming(
       s.status as string | undefined,
       s.nextEpisodeAirDate as string | undefined,
@@ -324,7 +359,7 @@ export default function EpisodesScreen() {
 
   const sections = useMemo(() => {
     const lastOf = (show: (typeof allShows)[0]) =>
-      lastWatchedAt(watchedEps, show.tmdbShowId as number);
+      lastWatchByShow.get(show.tmdbShowId as number) ?? null;
 
     const buckets: Record<WatchlistBucket, typeof allShows> = {
       watchNext: [],
@@ -334,7 +369,7 @@ export default function EpisodesScreen() {
 
     for (const show of watchlistShows) {
       const tmdbId = show.tmdbShowId as number;
-      const bucket = bucketForShow(show, watchedCount(watchedEps, tmdbId), lastOf(show));
+      const bucket = bucketForShow(show, watchedKeysByShow.get(tmdbId)?.size ?? 0, lastOf(show));
       buckets[bucket].push(show);
     }
 
@@ -348,7 +383,7 @@ export default function EpisodesScreen() {
             ? sortStale(buckets[key], lastOf)
             : sortNotStarted(buckets[key], lastOf),
     })).filter(s => s.data.length > 0);
-  }, [watchlistShows, watchedEps, allShows, dayKey]);
+  }, [watchlistShows, watchedKeysByShow, lastWatchByShow, allShows, dayKey]);
 
   const upcomingSections = useMemo(() => {
     const airOf = (show: (typeof allShows)[0]) =>
@@ -378,7 +413,7 @@ export default function EpisodesScreen() {
   }, [upcomingShows, allShows, dayKey]);
 
   function getWatchedCount(showId: number) {
-    return watchedCount(watchedEps, showId);
+    return watchedKeysByShow.get(showId)?.size ?? 0;
   }
 
   function getRemainingCount(show: (typeof allShows)[0]) {
@@ -431,7 +466,7 @@ export default function EpisodesScreen() {
     const curSeason = (show.nextSeasonNum as number | undefined) ?? 1;
     const curEpisode = (show.nextEpisodeNum as number | undefined) ?? 1;
     const previousSortIso = new Date(
-      sortTime(show, lastWatchedAt(watchedEps, tmdbId))
+      sortTime(show, lastWatchByShow.get(tmdbId) ?? null)
     ).toISOString();
     const previousFloor = trackFromCovering(trackFromOf(show), curSeason, curEpisode);
     const previous = {
@@ -454,39 +489,47 @@ export default function EpisodesScreen() {
 
     const now = new Date().toISOString();
     const epKey = `${curSeason}x${curEpisode}`;
-    if (heldCheckRef.current?.id === sId && heldCheckRef.current.key === epKey) return;
+    if (heldChecksRef.current[sId]?.key === epKey) return;
     const token = ++checkToken.current;
-    const hold = { id: sId, key: epKey };
-    heldCheckRef.current = hold;
-    setHeldCheck(hold);
+    checksInFlight.current.set(sId, token);
+    const release = () => {
+      if (checksInFlight.current.get(sId) === token) checksInFlight.current.delete(sId);
+      releaseHold(sId, token);
+    };
+    holdCheck(sId, { key: epKey, token });
     const alreadyWatched = watchedEps.find(
       e => e.tmdbShowId === tmdbId && e.seasonNumber === curSeason && e.episodeNumber === curEpisode
     );
     const episodeId = alreadyWatched ? null : instantId();
     const episodeName = (show.nextEpisodeName as string | undefined) ?? '';
 
-    await db.transact([
-      ...(episodeId
-        ? [
-            db.tx.watchedEpisodes[episodeId].update({
-              tmdbShowId: tmdbId,
-              seasonNumber: curSeason,
-              episodeNumber: curEpisode,
-              watchedAt: now,
-              ...watchedTitleFields(episodeName, ''),
-            }).link({ $user: user.id }),
-          ]
-        : []),
-      db.tx.userShows[sId].update({
-        status: 'watching',
-        keepWatching: true,
-        statusChosen: true,
-        lastTouchedAt: now,
-        ...(previousFloor
-          ? { trackFromSeason: previousFloor.season, trackFromEpisode: previousFloor.episode }
-          : {}),
-      }),
-    ]);
+    try {
+      await db.transact([
+        ...(episodeId
+          ? [
+              db.tx.watchedEpisodes[episodeId].update({
+                tmdbShowId: tmdbId,
+                seasonNumber: curSeason,
+                episodeNumber: curEpisode,
+                watchedAt: now,
+                ...watchedTitleFields(episodeName, ''),
+              }).link({ $user: user.id }),
+            ]
+          : []),
+        db.tx.userShows[sId].update({
+          status: 'watching',
+          keepWatching: true,
+          statusChosen: true,
+          lastTouchedAt: now,
+          ...(previousFloor
+            ? { trackFromSeason: previousFloor.season, trackFromEpisode: previousFloor.episode }
+            : {}),
+        }),
+      ]);
+    } catch (e) {
+      release();
+      throw e;
+    }
     setUndo({
       showId: sId,
       episodeId,
@@ -495,44 +538,140 @@ export default function EpisodesScreen() {
     });
 
     try {
+      const daysEarly = clampEarlyAccessDays(show.earlyAccessDays);
       let episodeRuntime: number | null = episodeRuntimeMinutes(
         show.nextEpisodeRuntime as number | undefined
       );
       let resolvedName = episodeName;
       let episodeOverview = '';
+      let seasonEps: Awaited<ReturnType<typeof tmdb.getSeason>>['episodes'] = [];
       try {
         const season = await tmdb.getSeason(tmdbId, curSeason);
-        const ep = (season.episodes ?? []).find(e => e.episode_number === curEpisode);
+        seasonEps = season.episodes ?? [];
+        const ep = seasonEps.find(e => e.episode_number === curEpisode);
         episodeRuntime = episodeRuntimeMinutes(ep?.runtime) ?? episodeRuntime;
         if (ep?.name) resolvedName = ep.name;
         if (ep?.overview) episodeOverview = ep.overview;
       } catch {
         episodeRuntime = episodeRuntime ?? episodeRuntimeMinutes(show.episodeRuntime as number | undefined);
       }
-      if (token !== checkToken.current) return;
+      const undone = () => {
+        const gen = undoGeneration.current.get(sId);
+        return gen != null && token < gen;
+      };
+      const superseded = () => checksInFlight.current.get(sId) !== token || undone();
+      async function abortIfStale(): Promise<boolean> {
+        if (!superseded()) return false;
+        if (undone()) {
+          const current = checksInFlight.current.get(sId);
+          const gen = undoGeneration.current.get(sId);
+          // Only re-restore when nothing newer owns the row.
+          if (current == null || current === gen) {
+            await db.transact([
+              db.tx.userShows[sId].update({
+                lastTouchedAt: previous.lastTouchedAt,
+                nextSeasonNum: previous.nextSeasonNum,
+                nextEpisodeNum: previous.nextEpisodeNum,
+                nextEpisodeName: previous.nextEpisodeName,
+                nextEpisodeAirDate: previous.nextEpisodeAirDate,
+                nextEpisodeStillPath: previous.nextEpisodeStillPath,
+                nextEpisodeRuntime: previous.nextEpisodeRuntime,
+                unwatchedAiredCount: previous.unwatchedAiredCount,
+                remainingAiredCount: previous.remainingAiredCount,
+                upcomingDropKind: previous.upcomingDropKind,
+                status: previous.status,
+                keepWatching: previous.keepWatching,
+                statusChosen: previous.statusChosen,
+                trackFromSeason: previous.trackFromSeason,
+                trackFromEpisode: previous.trackFromEpisode,
+              }),
+            ]);
+          }
+        }
+        return true;
+      }
+      if (await abortIfStale()) return;
 
       const rows = watchedEps.filter(e => e.tmdbShowId === tmdbId);
       const watched = new Set(rows.map(e => `${e.seasonNumber}x${e.episodeNumber}`));
       watched.add(`${curSeason}x${curEpisode}`);
+      const hints = [
+        ...watchedHintsFromRows(rows).filter(
+          hint => hint.season !== curSeason || hint.ep !== curEpisode
+        ),
+        {
+          season: curSeason,
+          ep: curEpisode,
+          titleKey: episodeTitleKey(resolvedName) || undefined,
+          overviewKey: episodeOverviewKey(episodeOverview) || undefined,
+        },
+      ];
+
+      // Advance from this season first so the row moves before the full catalog scan.
+      const airedLater = seasonEps
+        .filter(
+          e =>
+            e.season_number > 0 &&
+            e.episode_number > curEpisode &&
+            !watched.has(`${curSeason}x${e.episode_number}`) &&
+            episodeIsAvailable(
+              {
+                airDate: e.air_date,
+                stillPath: e.still_path,
+                runtime: e.runtime,
+                overview: e.overview,
+                name: e.name,
+              },
+              daysEarly
+            )
+        )
+        .sort((a, b) => a.episode_number - b.episode_number);
+      const quickNext = airedLater[0];
+      if (quickNext) {
+        if (await abortIfStale()) return;
+        const nextRuntime = episodeRuntimeMinutes(quickNext.runtime);
+        await db.transact([
+          ...(episodeId
+            ? [
+                db.tx.watchedEpisodes[episodeId].update({
+                  ...(episodeRuntime != null ? { runtime: episodeRuntime } : {}),
+                  ...watchedTitleFields(resolvedName, episodeOverview),
+                }),
+              ]
+            : []),
+          db.tx.userShows[sId].update({
+            status: 'watching',
+            keepWatching: true,
+            statusChosen: true,
+            lastTouchedAt: now,
+            nextSeasonNum: curSeason,
+            nextEpisodeNum: quickNext.episode_number,
+            nextEpisodeName: quickNext.name ?? '',
+            nextEpisodeAirDate: quickNext.air_date ?? '',
+            nextEpisodeStillPath: quickNext.still_path ?? '',
+            nextEpisodeRuntime: nextRuntime,
+            unwatchedAiredCount: airedLater.length,
+            remainingAiredCount: Math.max(0, airedLater.length - 1),
+            ...(previousFloor
+              ? {
+                  trackFromSeason: previousFloor.season,
+                  trackFromEpisode: previousFloor.episode,
+                }
+              : {}),
+          }),
+        ]);
+        if (await abortIfStale()) return;
+      }
+
       const progress = await findProgressFromTmdb(
         tmdbId,
         watched,
         curSeason,
-        clampEarlyAccessDays(show.earlyAccessDays),
+        daysEarly,
         previousFloor,
-        [
-          ...watchedHintsFromRows(rows).filter(
-            hint => hint.season !== curSeason || hint.ep !== curEpisode
-          ),
-          {
-            season: curSeason,
-            ep: curEpisode,
-            titleKey: episodeTitleKey(resolvedName) || undefined,
-            overviewKey: episodeOverviewKey(episodeOverview) || undefined,
-          },
-        ]
+        hints
       );
-      if (token !== checkToken.current) return;
+      if (await abortIfStale()) return;
       const updates = progressUpdates(progress);
       if (updates.status === 'watching') {
         updates.keepWatching = true;
@@ -552,7 +691,7 @@ export default function EpisodesScreen() {
           current && current.showId === sId ? { ...current, finished: true } : current
         );
         await new Promise(resolve => setTimeout(resolve, FINISHED_HOLD_MS));
-        if (token !== checkToken.current) return;
+        if (await abortIfStale()) return;
       }
       if (previousFloor) {
         updates.trackFromSeason = previousFloor.season;
@@ -572,25 +711,25 @@ export default function EpisodesScreen() {
           lastTouchedAt: now,
         }),
       ]);
+      if (await abortIfStale()) return;
       setFinishedId(current => (current === sId ? null : current));
     } catch (e) {
       console.warn('Failed to advance episode', e);
-      if (heldCheckRef.current?.id === sId && heldCheckRef.current.key === epKey) {
-        heldCheckRef.current = null;
-        setHeldCheck(null);
-      }
+    } finally {
+      release();
     }
   }
 
   async function undoLast() {
     if (!undo) return;
-    checkToken.current += 1;
-    heldCheckRef.current = null;
-    setHeldCheck(null);
-    setFinishedId(null);
     const snapshot = undo;
+    const undoToken = ++checkToken.current;
+    checksInFlight.current.set(snapshot.showId, undoToken);
+    undoGeneration.current.set(snapshot.showId, undoToken);
+    releaseHold(snapshot.showId);
+    setFinishedId(current => (current === snapshot.showId ? null : current));
     setUndo(null);
-    const showOp = db.tx.userShows[snapshot.showId].update({
+    const previousFields = {
       lastTouchedAt: snapshot.previous.lastTouchedAt,
       nextSeasonNum: snapshot.previous.nextSeasonNum,
       nextEpisodeNum: snapshot.previous.nextEpisodeNum,
@@ -606,12 +745,25 @@ export default function EpisodesScreen() {
       statusChosen: snapshot.previous.statusChosen,
       trackFromSeason: snapshot.previous.trackFromSeason,
       trackFromEpisode: snapshot.previous.trackFromEpisode,
-    });
-    await db.transact(
-      snapshot.episodeId
-        ? [showOp, db.tx.watchedEpisodes[snapshot.episodeId].delete()]
-        : [showOp]
-    );
+    };
+    try {
+      await db.transact(
+        snapshot.episodeId
+          ? [
+              db.tx.userShows[snapshot.showId].update(previousFields),
+              db.tx.watchedEpisodes[snapshot.episodeId].delete(),
+            ]
+          : [db.tx.userShows[snapshot.showId].update(previousFields)]
+      );
+      // A check write may have landed during the first restore; claim the row again.
+      if (checksInFlight.current.get(snapshot.showId) === undoToken) {
+        await db.transact([db.tx.userShows[snapshot.showId].update(previousFields)]);
+      }
+    } finally {
+      if (checksInFlight.current.get(snapshot.showId) === undoToken) {
+        checksInFlight.current.delete(snapshot.showId);
+      }
+    }
   }
 
   function renderShow(item: (typeof allShows)[0]) {
@@ -662,8 +814,7 @@ export default function EpisodesScreen() {
         upcomingDropKind={item.upcomingDropKind as string | null | undefined}
         canMark={isOnWatchlist(item)}
         pendingCheck={
-          heldCheck?.id === item.id &&
-          heldCheck.key === `${item.nextSeasonNum}x${item.nextEpisodeNum}`
+          heldChecks[item.id]?.key === `${item.nextSeasonNum}x${item.nextEpisodeNum}`
         }
         finished={finishedId === item.id}
         daysEarly={clampEarlyAccessDays(item.earlyAccessDays)}

@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -137,7 +137,6 @@ export default function ShowRowTV({
 }: ShowRowTVProps) {
   const swipeRef = useRef<Swipeable>(null);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [marking, setMarking] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailOverview, setDetailOverview] = useState('');
@@ -164,16 +163,6 @@ export default function ShowRowTV({
     airsLabel
   );
   const runtimeLabel = formatRuntime(nextEpisodeRuntime) ?? formatRuntime(episodeRuntime);
-
-  useEffect(() => {
-    setMarking(false);
-  }, [nextSeasonNum, nextEpisodeNum]);
-
-  useEffect(() => {
-    if (!marking) return;
-    const t = setTimeout(() => setMarking(false), 5000);
-    return () => clearTimeout(t);
-  }, [marking]);
 
   function handleWatchLater() {
     swipeRef.current?.close();
@@ -223,7 +212,7 @@ export default function ShowRowTV({
               <Text style={styles.posterEmoji}>📺</Text>
             </View>
           )}
-          {marking ? (
+          {pendingCheck ? (
             <View style={styles.stillFlash} pointerEvents="none">
               <Text style={styles.stillFlashMark}>✓</Text>
             </View>
@@ -274,8 +263,7 @@ export default function ShowRowTV({
           <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => {
-              if (marking || pendingCheck) return;
-              setMarking(true);
+              if (pendingCheck) return;
               onCheckPress();
             }}
             activeOpacity={0.75}
@@ -284,12 +272,12 @@ export default function ShowRowTV({
             accessibilityLabel={
               finished
                 ? 'Series finished'
-                : marking || pendingCheck
+                : pendingCheck
                   ? 'Marked as watched'
                   : 'Mark episode as watched'
             }
           >
-            <EpisodeCheck watched={marking || pendingCheck || finished} finished={finished} size={28} />
+            <EpisodeCheck watched={pendingCheck || finished} finished={finished} size={28} />
           </TouchableOpacity>
         ) : (
           <View style={styles.iconBtn} accessibilityLabel="This episode isn't out yet">

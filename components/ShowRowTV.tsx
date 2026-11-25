@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,15 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
+import Animated, {
+  Easing,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withSequence,
+  withTiming,
+} from 'react-native-reanimated';
 import { posterUrl, stillUrl, formatAirsLabel, formatRuntime } from '@/lib/tmdb';
 import { theme } from '@/constants/theme';
 import EpisodeCheck from '@/components/EpisodeCheck';
@@ -144,9 +153,34 @@ export default function ShowRowTV({
   const [detailName, setDetailName] = useState(nextEpisodeName ?? '');
   const [detailRuntime, setDetailRuntime] = useState(nextEpisodeRuntime ?? null);
   const [detailVote, setDetailVote] = useState<number | null>(null);
+  const flashOpacity = useSharedValue(0);
   const poster = posterUrl(posterPath, 'w185');
   const still = stillUrl(nextEpisodeStillPath, 'w185');
   const thumb = still ?? poster;
+  const checking = pendingCheck && !finished;
+
+  useEffect(() => {
+    if (!checking) {
+      cancelAnimation(flashOpacity);
+      flashOpacity.value = withTiming(0, { duration: 160 });
+      return;
+    }
+    flashOpacity.value = withRepeat(
+      withSequence(
+        withTiming(1, { duration: 420, easing: Easing.out(Easing.quad) }),
+        withTiming(0.45, { duration: 420, easing: Easing.in(Easing.quad) })
+      ),
+      -1,
+      false
+    );
+    return () => {
+      cancelAnimation(flashOpacity);
+    };
+  }, [checking, flashOpacity]);
+
+  const flashStyle = useAnimatedStyle(() => ({
+    opacity: flashOpacity.value,
+  }));
 
   const season = nextSeasonNum ?? 1;
   const episode = nextEpisodeNum ?? 1;
@@ -212,10 +246,10 @@ export default function ShowRowTV({
               <Text style={styles.posterEmoji}>📺</Text>
             </View>
           )}
-          {pendingCheck ? (
-            <View style={styles.stillFlash} pointerEvents="none">
+          {checking ? (
+            <Animated.View style={[styles.stillFlash, flashStyle]} pointerEvents="none">
               <Text style={styles.stillFlashMark}>✓</Text>
-            </View>
+            </Animated.View>
           ) : null}
         </View>
       </TouchableOpacity>
@@ -263,7 +297,7 @@ export default function ShowRowTV({
           <TouchableOpacity
             style={styles.iconBtn}
             onPress={() => {
-              if (pendingCheck) return;
+              if (checking) return;
               onCheckPress();
             }}
             activeOpacity={0.75}
@@ -272,12 +306,17 @@ export default function ShowRowTV({
             accessibilityLabel={
               finished
                 ? 'Series finished'
-                : pendingCheck
-                  ? 'Marked as watched'
+                : checking
+                  ? 'Marking as watched'
                   : 'Mark episode as watched'
             }
           >
-            <EpisodeCheck watched={pendingCheck || finished} finished={finished} size={28} />
+            <EpisodeCheck
+              watched={pendingCheck || finished}
+              pending={checking}
+              finished={finished}
+              size={28}
+            />
           </TouchableOpacity>
         ) : (
           <View style={styles.iconBtn} accessibilityLabel="This episode isn't out yet">

@@ -129,7 +129,11 @@ export default function MovieRow({
               checked || marking ? 'Marked as watched' : 'Mark movie as watched'
             }
           >
-            <EpisodeCheck watched={checked || marking} size={28} />
+            <EpisodeCheck
+              watched={checked || marking}
+              pending={marking && !checked}
+              size={28}
+            />
           </TouchableOpacity>
         ) : (
           <View style={styles.iconBtn} accessibilityLabel="This movie isn't out yet">

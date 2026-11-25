@@ -5,6 +5,9 @@ import {
   StyleSheet,
   TouchableOpacity,
   ActivityIndicator,
+  LayoutAnimation,
+  Platform,
+  UIManager,
 } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { id as instantId } from '@instantdb/react-native';
@@ -41,6 +44,7 @@ import {
   bucketForShow,
   inferredWatchlistBucket,
   sortWatchNext,
+  sortWatchNextPinned,
   sortStale,
   sortNotStarted,
   WatchlistBucket,
@@ -56,7 +60,11 @@ import { CollapsibleScrollView } from '@/components/TabBarCollapse';
 
 type TabKey = 'watchlist' | 'upcoming';
 
-type HeldCheck = { key: string; token: number };
+type HeldCheck = { key: string; token: number; pinSortMs: number };
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 type UndoSnapshot = {
   showId: string;
@@ -172,6 +180,10 @@ export default function EpisodesScreen() {
   function releaseHold(showId: string, token?: number) {
     const current = heldChecksRef.current[showId];
     if (current == null || (token != null && current.token !== token)) return;
+    LayoutAnimation.configureNext({
+      duration: 320,
+      update: { type: LayoutAnimation.Types.easeInEaseOut },
+    });
     const { [showId]: _, ...rest } = heldChecksRef.current;
     heldChecksRef.current = rest;
     setHeldChecks(rest);
@@ -373,17 +385,19 @@ export default function EpisodesScreen() {
       buckets[bucket].push(show);
     }
 
+    const pinnedSort = (show: (typeof allShows)[0]) => heldChecks[show.id]?.pinSortMs;
+
     return SECTION_META.map(({ key, title }) => ({
       key,
       title,
       data:
         key === 'watchNext'
-          ? sortWatchNext(buckets[key], lastOf)
+          ? sortWatchNextPinned(buckets[key], lastOf, pinnedSort)
           : key === 'stale'
             ? sortStale(buckets[key], lastOf)
             : sortNotStarted(buckets[key], lastOf),
     })).filter(s => s.data.length > 0);
-  }, [watchlistShows, watchedKeysByShow, lastWatchByShow, allShows, dayKey]);
+  }, [watchlistShows, watchedKeysByShow, lastWatchByShow, allShows, dayKey, heldChecks]);
 
   const upcomingSections = useMemo(() => {
     const airOf = (show: (typeof allShows)[0]) =>
@@ -469,11 +483,12 @@ export default function EpisodesScreen() {
     if (heldChecksRef.current[sId]?.key === epKey) return;
     const token = ++checkToken.current;
     checksInFlight.current.set(sId, token);
+    const pinSortMs = sortTime(show, lastWatchByShow.get(tmdbId) ?? null);
     const release = () => {
       if (checksInFlight.current.get(sId) === token) checksInFlight.current.delete(sId);
       releaseHold(sId, token);
     };
-    holdCheck(sId, { key: epKey, token });
+    holdCheck(sId, { key: epKey, token, pinSortMs });
 
     const previousSortIso = new Date(
       sortTime(show, lastWatchByShow.get(tmdbId) ?? null)
@@ -814,9 +829,7 @@ export default function EpisodesScreen() {
         remainingCount={getRemainingCount(item)}
         upcomingDropKind={item.upcomingDropKind as string | null | undefined}
         canMark={isOnWatchlist(item)}
-        pendingCheck={
-          heldChecks[item.id]?.key === `${item.nextSeasonNum}x${item.nextEpisodeNum}`
-        }
+        pendingCheck={heldChecks[item.id] != null}
         finished={finishedId === item.id}
         daysEarly={clampEarlyAccessDays(item.earlyAccessDays)}
         onShowPress={() => router.push(`/show/${item.tmdbShowId}`)}

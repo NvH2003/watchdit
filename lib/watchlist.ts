@@ -121,6 +121,19 @@ export function sortWatchNext<T extends WatchlistShow>(
   );
 }
 
+/** Keep a row in place while its check animation runs; list order updates after release. */
+export function sortWatchNextPinned<T extends WatchlistShow>(
+  shows: T[],
+  lastWatchOf: (show: T) => number | null,
+  pinnedSortMs: (show: T) => number | undefined
+): T[] {
+  return [...shows].sort((a, b) => {
+    const ta = pinnedSortMs(a) ?? sortTime(a, lastWatchOf(a));
+    const tb = pinnedSortMs(b) ?? sortTime(b, lastWatchOf(b));
+    return tb - ta;
+  });
+}
+
 export function sortStale<T extends WatchlistShow>(
   shows: T[],
   lastWatchOf: (show: T) => number | null
